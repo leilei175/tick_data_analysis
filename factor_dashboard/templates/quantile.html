@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>分层分析 - 高频因子分析平台</title>
+    {% extends "base.html" %}
+    {% block header_title %}分层分析{% endblock %}
+    {% block extra_css %}
+    <style>
+        .page-header {
+            margin-bottom: 24px;
+        }
+        .page-title {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .page-subtitle {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-top: 4px;
+        }
+        .factor-selector {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .control-row {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .control-group label {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .select-input {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            font-size: 13px;
+        }
+        .quantile-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 12px;
+            margin-top: 16px;
+        }
+        @media (max-width: 1200px) {
+            .quantile-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 600px) {
+            .quantile-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        .quantile-item {
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            text-align: center;
+            transition: all var(--transition-fast);
+        }
+        .quantile-item:hover {
+            transform: translateY(-2px);
+        }
+        .quantile-item.top {
+            border: 1px solid rgba(16, 185, 129, 0.5);
+            background: rgba(16, 185, 129, 0.1);
+        }
+        .quantile-item.bottom {
+            border: 1px solid rgba(239, 68, 68, 0.5);
+            background: rgba(239, 68, 68, 0.1);
+        }
+        .quantile-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+        .quantile-value {
+            font-size: 18px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .spread-card {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(6, 182, 212, 0.1));
+            border: 1px solid var(--accent-primary);
+            border-radius: var(--radius-lg);
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .spread-info h3 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .spread-info p {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .spread-value {
+            font-size: 32px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .spread-value.positive { color: var(--accent-success); }
+        .spread-value.negative { color: var(--accent-danger); }
+    </style>
+{% endblock %}
+</head>
+<body>
+    {% block content %}
+    <div class="page-header fade-in">
+        <h1 class="page-title">分层分析</h1>
+        <p class="page-subtitle">基于因子值分组的收益表现</p>
+    </div>
+
+    <!-- 控制栏 -->
+    <div class="control-row fade-in">
+        <div class="factor-selector" id="factorTabs">
+            <!-- 因子选择器由JS生成 -->
+        </div>
+        <div class="control-group">
+            <label>持有期</label>
+            <select id="periodSelect" class="select-input" onchange="loadQuantile()">
+                <option value="1">1日</option>
+                <option value="5">5日</option>
+                <option value="10">10日</option>
+            </select>
+        </div>
+        <button class="btn btn-primary" onclick="loadQuantile()">分析</button>
+    </div>
+
+    <!-- 多空价差卡片 -->
+    <div class="spread-card fade-in" id="spreadCard" style="display:none;">
+        <div class="spread-info">
+            <h3>多空组合收益差 (Top - Bottom)</h3>
+            <p>最高因子组与最低因子组的平均日收益差异</p>
+        </div>
+        <div class="spread-value" id="lsSpread">-</div>
+    </div>
+
+    <!-- 分组详情 -->
+    <div class="quantile-grid mb-24 fade-in" id="quantileDetails">
+        <div class="loading" style="grid-column: 1/-1;padding:40px;text-align:center;">
+            选择因子后点击"分析"
+        </div>
+    </div>
+
+    <!-- 图表 -->
+    <div class="chart-row mb-24">
+        <div class="chart-container fade-in">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">分组收益对比</div>
+                    <div class="card-subtitle">各分位数组的平均日收益率</div>
+                </div>
+            </div>
+            <div id="returnChart" style="height:300px;"></div>
+        </div>
+        <div class="chart-container fade-in">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">分组IC对比</div>
+                    <div class="card-subtitle">各分位数组的IC表现</div>
+                </div>
+            </div>
+            <div id="icChart" style="height:300px;"></div>
+        </div>
+    </div>
+    {% endblock %}
+
+    {% block extra_js %}
+    <script>
+        let allFactors = [];
+        let currentFactor = '';
+
+        async function loadFactors() {
+            try {
+                const res = await fetch('/api/factors/list');
+                const data = await res.json();
+                if (data.status === 'success') {
+                    allFactors = data.data.factors;
+                    renderFactorTabs();
+                    if (allFactors.length > 0) {
+                        currentFactor = allFactors[0];
+                        loadQuantile();
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading factors:', error);
+            }
+        }
+
+        function renderFactorTabs() {
+            const container = document.getElementById('factorTabs');
+            container.innerHTML = allFactors.map(f => `
+                <button class="factor-btn ${f === currentFactor ? 'active' : ''}"
+                        onclick="selectFactor('${f}')">${f}</button>
+            `).join('');
+        }
+
+        function selectFactor(factor) {
+            currentFactor = factor;
+            document.querySelectorAll('.factor-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.textContent === factor);
+            });
+        }
+
+        async function loadQuantile() {
+            const period = document.getElementById('periodSelect').value;
+            const detailsDiv = document.getElementById('quantileDetails');
+            const spreadCard = document.getElementById('spreadCard');
+
+            detailsDiv.innerHTML = '<div class="loading" style="grid-column:1/-1;padding:40px;text-align:center;">加载中...</div>';
+            spreadCard.style.display = 'none';
+
+            try {
+                const res = await fetch(`/api/quantile?factor=${currentFactor}&period=${period}`);
+                const data = await res.json();
+
+                if (data.status !== 'success' || !data.data.length) {
+                    detailsDiv.innerHTML = '<div class="error-cell" style="grid-column:1/-1;padding:40px;text-align:center;">加载失败或无数据</div>';
+                    return;
+                }
+
+                const qData = data.data;
+
+                // 计算多空收益差
+                const topReturn = qData[4].return_mean;
+                const bottomReturn = qData[0].return_mean;
+                const spread = (topReturn - bottomReturn) * 10000;
+
+                document.getElementById('lsSpread').textContent = `${spread >= 0 ? '+' : ''}${spread.toFixed(2)} bps`;
+                document.getElementById('lsSpread').className = `spread-value ${spread >= 0 ? 'positive' : 'negative'}`;
+                spreadCard.style.display = 'flex';
+
+                // 渲染分位数详情
+                const colors = ['#ef4444', '#f97316', '#f59e0b', '#10b981', '#10b981'];
+                detailsDiv.innerHTML = qData.map((d, i) => `
+                    <div class="quantile-item ${i === 0 ? 'bottom' : ''} ${i === 4 ? 'top' : ''}">
+                        <div class="quantile-label">Q${i + 1}</div>
+                        <div class="quantile-value">${d.factor_mean.toFixed(4)}</div>
+                        <div style="font-size:13px;margin-top:8px;color:${d.return_mean >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'}">
+                            ${(d.return_mean * 10000).toFixed(2)} bps
+                        </div>
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+                            IC: ${d.ic.toFixed(4)}
+                        </div>
+                    </div>
+                `).join('');
+
+                // 绘制收益图
+                const returnTrace = {
+                    x: qData.map((_, i) => `Q${i + 1}`),
+                    y: qData.map(d => d.return_mean * 10000),
+                    type: 'bar',
+                    marker: { color: colors, opacity: 0.9 },
+                    text: qData.map(d => `${(d.return_mean * 10000).toFixed(2)}`),
+                    textposition: 'outside'
+                };
+
+                const returnLayout = {
+                    paper_bgcolor: 'transparent',
+                    plot_bgcolor: 'transparent',
+                    font: { color: '#94a3b8' },
+                    margin: { t: 10, r: 20, b: 40, l: 50 },
+                    xaxis: { title: 'Quantile', gridcolor: '#2d3748' },
+                    yaxis: { title: 'Return (bps)', gridcolor: '#2d3748' }
+                };
+
+                Plotly.newPlot('returnChart', [returnTrace], returnLayout, {responsive: true});
+
+                // 绘制IC图
+                const icTrace = {
+                    x: qData.map((_, i) => `Q${i + 1}`),
+                    y: qData.map(d => d.ic),
+                    type: 'bar',
+                    marker: { color: qData.map(d => d.ic >= 0 ? '#10b981' : '#ef4444'), opacity: 0.9 }
+                };
+
+                const icLayout = {
+                    paper_bgcolor: 'transparent',
+                    plot_bgcolor: 'transparent',
+                    font: { color: '#94a3b8' },
+                    margin: { t: 10, r: 20, b: 40, l: 50 },
+                    xaxis: { title: 'Quantile', gridcolor: '#2d3748' },
+                    yaxis: { title: 'IC', gridcolor: '#2d3748' }
+                };
+
+                Plotly.newPlot('icChart', [icTrace], icLayout, {responsive: true});
+
+            } catch (error) {
+                console.error('Error:', error);
+                detailsDiv.innerHTML = '<div class="error-cell" style="grid-column:1/-1;padding:40px;text-align:center;">加载失败</div>';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', loadFactors);
+    </script>
+    {% endblock %}
+</body>
+</html>

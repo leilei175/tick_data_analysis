@@ -1,0 +1,634 @@
+{% extends "base.html" %}
+
+{% block title %}因子数据 - 高频因子分析平台{% endblock %}
+
+{% block header_title %}因子数据{% endblock %}
+
+{% block content %}
+<div class="content-section">
+    <!-- 大文件警告 -->
+    <div class="warning-banner" id="largeFileWarning" style="display: none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <div class="warning-content">
+            <strong>大文件说明：</strong>
+            <ul id="largeFileList"></ul>
+        </div>
+    </div>
+
+    <!-- 数据汇总看板 -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-icon blue">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                </svg>
+            </div>
+            <div class="stat-content">
+                <div class="stat-value" id="totalFiles">-</div>
+                <div class="stat-label">总文件数</div>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon green">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                    <line x1="3" y1="9" x2="21" y2="9"/>
+                    <line x1="9" y1="21" x2="9" y2="9"/>
+                </svg>
+            </div>
+            <div class="stat-content">
+                <div class="stat-value" id="zz1000Files">-</div>
+                <div class="stat-label">中证1000文件</div>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon orange">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="8" y1="6" x2="21" y2="6"/>
+                    <line x1="8" y1="12" x2="21" y2="12"/>
+                    <line x1="8" y1="18" x2="21" y2="18"/>
+                    <line x1="3" y1="6" x2="3.01" y2="6"/>
+                    <line x1="3" y1="12" x2="3.01" y2="12"/>
+                    <line x1="3" y1="18" x2="3.01" y2="18"/>
+                </svg>
+            </div>
+            <div class="stat-content">
+                <div class="stat-value" id="dailyFiles">-</div>
+                <div class="stat-label">日频文件</div>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon purple">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                    <line x1="12" y1="22.08" x2="12" y2="12"/>
+                </svg>
+            </div>
+            <div class="stat-content">
+                <div class="stat-value" id="totalRecords">-</div>
+                <div class="stat-label">总记录数</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 数据存放地址 -->
+    <div class="path-card">
+        <h3 class="path-title">数据存放地址</h3>
+        <div class="path-value" id="dataPath">加载中...</div>
+    </div>
+
+    <!-- 因子文件列表 -->
+    <div class="section-card">
+        <div class="section-header">
+            <h3 class="section-title">因子文件列表</h3>
+            <div class="header-actions">
+                <button class="btn btn-sm" onclick="loadQuickInfo()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                    </svg>
+                    刷新
+                </button>
+            </div>
+        </div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th style="width: 40px;"></th>
+                        <th>文件名</th>
+                        <th>文件大小</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="fileTableBody">
+                    <tr>
+                        <td colspan="5" class="loading-cell">点击"刷新"加载文件列表</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 文件详情展示区 -->
+    <div class="section-card" id="fileDetailSection" style="display: none;">
+        <div class="section-header">
+            <h3 class="section-title" id="detailFileName">文件详情</h3>
+            <button class="btn btn-sm" onclick="closeDetail()">关闭</button>
+        </div>
+        <div class="detail-grid" id="detailContent">
+            <!-- 动态填充 -->
+        </div>
+    </div>
+
+    <!-- 因子数据样例 -->
+    <div class="section-card">
+        <div class="section-header">
+            <h3 class="section-title">因子数据样例（小文件）</h3>
+            <button class="btn btn-sm" onclick="loadFactorData()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                </svg>
+                刷新
+            </button>
+        </div>
+        <div class="sample-info">
+            <span id="sampleFilename">点击刷新加载数据样例</span>
+            <span id="sampleRows">-</span>
+        </div>
+        <div class="table-container" style="max-height: 400px; overflow: auto;">
+            <table class="data-table" id="sampleTable">
+                <thead id="sampleTableHead">
+                    <tr><th>加载中...</th></tr>
+                </thead>
+                <tbody id="sampleTableBody">
+                    <tr><td>点击上方按钮加载样例数据</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let expandedRows = new Set();
+
+    // 页面初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        loadQuickInfo();
+    });
+
+    // 快速加载文件基本信息
+    async function loadQuickInfo() {
+        try {
+            const response = await fetch('/api/factor-quick');
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                const data = result.data;
+
+                // 更新统计
+                document.getElementById('totalFiles').textContent = data.total_files || '-';
+                document.getElementById('zz1000Files').textContent = data.zz1000_files || '-';
+                document.getElementById('dailyFiles').textContent = data.daily_files || '-';
+                document.getElementById('dataPath').textContent = data.data_source || '-';
+
+                // 显示大文件警告
+                const warningBanner = document.getElementById('largeFileWarning');
+                const largeFileList = document.getElementById('largeFileList');
+                if (data.large_files && data.large_files.length > 0) {
+                    warningBanner.style.display = 'flex';
+                    largeFileList.innerHTML = data.large_files.map(f =>
+                        `<li><code>${f.filename}</code> (${f.size_mb} MB) - ${f.reason}</li>`
+                    ).join('');
+                } else {
+                    warningBanner.style.display = 'none';
+                }
+
+                // 渲染文件列表
+                renderFileList(data.files);
+            }
+        } catch (error) {
+            console.error('加载文件列表失败:', error);
+            document.getElementById('fileTableBody').innerHTML =
+                '<tr><td colspan="5" class="error-cell">加载失败</td></tr>';
+        }
+    }
+
+    // 渲染文件列表
+    function renderFileList(files) {
+        const tbody = document.getElementById('fileTableBody');
+
+        if (!files || files.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">没有找到因子文件</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = files.map((file, index) => {
+            const isExpanded = expandedRows.has(file.filename);
+            const rowClass = isExpanded ? 'expanded' : '';
+            const detailHtml = isExpanded ? `
+                <tr class="detail-row">
+                    <td colspan="5" class="detail-cell">
+                        <div class="detail-loading" id="detail-${index}">
+                            <span class="loading-spinner-small"></span> 加载中...
+                        </div>
+                    </td>
+                </tr>
+            ` : '';
+
+            return `
+                <tr class="${rowClass}" data-filename="${file.filename}" data-index="${index}">
+                    <td>
+                        <button class="expand-btn ${isExpanded ? 'expanded' : ''}" onclick="toggleDetail('${file.filename}', ${index})">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="9 18 15 12 9 6"/>
+                            </svg>
+                        </button>
+                    </td>
+                    <td class="filename">
+                        ${file.is_large ? '<span class="tag-large">大文件</span>' : ''}
+                        ${file.filename}
+                    </td>
+                    <td>${file.file_size_mb.toFixed(2)} MB</td>
+                    <td>
+                        <span class="status-badge ${file.is_large ? 'status-warning' : 'status-ok'}">
+                            ${file.is_large ? '已跳过加载' : '就绪'}
+                        </span>
+                    </td>
+                    <td>
+                        <button class="btn-action" onclick="viewFileDetail('${file.filename}')">
+                            查看详情
+                        </button>
+                    </td>
+                </tr>
+                ${detailHtml}
+            `;
+        }).join('');
+    }
+
+    // 切换展开/收起
+    async function toggleDetail(filename, index) {
+        if (expandedRows.has(filename)) {
+            expandedRows.delete(filename);
+        } else {
+            expandedRows.add(filename);
+            await loadFileDetail(filename, index);
+        }
+        renderFileList();
+    }
+
+    // 加载文件详情
+    async function loadFileDetail(filename, index) {
+        try {
+            const response = await fetch(`/api/factor-file-info/${filename}`);
+            const result = await response.json();
+
+            const loadingEl = document.getElementById(`detail-${index}`);
+            if (!loadingEl) return;
+
+            if (result.status === 'success') {
+                const data = result.data;
+                loadingEl.innerHTML = `
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">文件路径</span>
+                            <span class="detail-value">${data.file_path}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">记录数</span>
+                            <span class="detail-value">${data.record_count.toLocaleString()}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">股票数量</span>
+                            <span class="detail-value">${data.stock_count.toLocaleString()}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">日期范围</span>
+                            <span class="detail-value">${data.date_range.start} 至 ${data.date_range.end}</span>
+                        </div>
+                        <div class="detail-item full-width">
+                            <span class="detail-label">数据列</span>
+                            <div class="columns-tags">
+                                ${data.columns.map(col => `<span class="column-tag">${col}</span>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                loadingEl.innerHTML = `<span class="error-text">${result.message}</span>`;
+            }
+        } catch (error) {
+            const loadingEl = document.getElementById(`detail-${index}`);
+            if (loadingEl) {
+                loadingEl.innerHTML = `<span class="error-text">加载失败: ${error.message}</span>`;
+            }
+        }
+    }
+
+    // 查看文件详情（显示在详情区）
+    async function viewFileDetail(filename) {
+        const section = document.getElementById('fileDetailSection');
+        const title = document.getElementById('detailFileName');
+        const content = document.getElementById('detailContent');
+
+        section.style.display = 'block';
+        title.textContent = `文件详情: ${filename}`;
+        content.innerHTML = '<div class="detail-loading"><span class="loading-spinner-small"></span> 加载中...</div>';
+
+        // 滚动到详情区
+        section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+        try {
+            const response = await fetch(`/api/factor-file-info/${filename}`);
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                const data = result.data;
+                content.innerHTML = `
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">文件路径</span>
+                            <span class="detail-value">${data.file_path}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">文件大小</span>
+                            <span class="detail-value">${data.file_size_mb.toFixed(2)} MB</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">记录数</span>
+                            <span class="detail-value">${data.record_count.toLocaleString()}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">股票数量</span>
+                            <span class="detail-value">${data.stock_count.toLocaleString()}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">起始日期</span>
+                            <span class="detail-value">${data.date_range.start || '-'}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">结束日期</span>
+                            <span class="detail-value">${data.date_range.end || '-'}</span>
+                        </div>
+                        <div class="detail-item full-width">
+                            <span class="detail-label">数据列 (${data.columns.length})</span>
+                            <div class="columns-tags">
+                                ${data.columns.map(col => `<span class="column-tag">${col}</span>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                content.innerHTML = `<span class="error-text">${result.message}</span>`;
+            }
+        } catch (error) {
+            content.innerHTML = `<span class="error-text">加载失败: ${error.message}</span>`;
+        }
+    }
+
+    // 关闭详情区
+    function closeDetail() {
+        document.getElementById('fileDetailSection').style.display = 'none';
+    }
+
+    // 加载因子数据样例
+    async function loadFactorData() {
+        try {
+            const response = await fetch('/api/factor-sample');
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                const data = result.data;
+
+                document.getElementById('sampleFilename').textContent = data.filename;
+                document.getElementById('sampleRows').textContent = `共 ${data.total_rows.toLocaleString()} 行`;
+
+                // 渲染表头
+                const thead = document.getElementById('sampleTableHead');
+                thead.innerHTML = '<tr>' + data.columns.map(col =>
+                    `<th>${col}</th>`
+                ).join('') + '</tr>';
+
+                // 渲染数据行
+                const tbody = document.getElementById('sampleTableBody');
+                tbody.innerHTML = data.sample_data.map(row => '<tr>' +
+                    data.columns.map(col => {
+                        const value = row[col];
+                        if (value === null || value === undefined) return '<td class="null-value">-</td>';
+                        if (typeof value === 'number') return `<td class="number-value">${value.toFixed(4)}</td>`;
+                        return `<td>${value}</td>`;
+                    }).join('') + '</tr>'
+                ).join('');
+            }
+        } catch (error) {
+            console.error('加载数据样例失败:', error);
+            document.getElementById('sampleTableBody').innerHTML =
+                '<tr><td class="error-cell">加载失败</td></tr>';
+        }
+    }
+</script>
+
+<style>
+    /* 大文件警告 */
+    .warning-banner {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        background: rgba(245, 158, 11, 0.1);
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        border-radius: var(--radius-md);
+        padding: 14px 16px;
+        margin-bottom: 16px;
+    }
+
+    .warning-banner svg {
+        width: 22px;
+        height: 22px;
+        color: var(--accent-warning);
+        flex-shrink: 0;
+        margin-top: 2px;
+    }
+
+    .warning-content {
+        flex: 1;
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .warning-content strong {
+        color: var(--accent-warning);
+    }
+
+    .warning-content ul {
+        margin: 8px 0 0 0;
+        padding-left: 20px;
+    }
+
+    .warning-content li {
+        margin: 4px 0;
+    }
+
+    .warning-content code {
+        background: var(--bg-tertiary);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 12px;
+    }
+
+    /* 展开按钮 */
+    .expand-btn {
+        width: 28px;
+        height: 28px;
+        border: none;
+        background: var(--bg-tertiary);
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all var(--transition-fast);
+    }
+
+    .expand-btn svg {
+        width: 14px;
+        height: 14px;
+        color: var(--text-secondary);
+        transition: transform 0.2s ease;
+    }
+
+    .expand-btn:hover {
+        background: var(--bg-hover);
+    }
+
+    .expand-btn.expanded svg {
+        transform: rotate(90deg);
+    }
+
+    /* 标签 */
+    .tag-large {
+        display: inline-block;
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--accent-warning);
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-right: 6px;
+    }
+
+    /* 状态标签 */
+    .status-badge {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 500;
+    }
+
+    .status-ok {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--accent-success);
+    }
+
+    .status-warning {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--accent-warning);
+    }
+
+    /* 操作按钮 */
+    .btn-action {
+        padding: 6px 12px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-tertiary);
+        color: var(--text-secondary);
+        border-radius: var(--radius-sm);
+        font-size: 11px;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+    }
+
+    .btn-action:hover {
+        border-color: var(--accent-primary);
+        color: var(--accent-primary);
+    }
+
+    /* 详情行 */
+    .detail-row {
+        background: var(--bg-tertiary);
+    }
+
+    .detail-cell {
+        padding: 16px !important;
+    }
+
+    /* 详情网格 */
+    .detail-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        padding: 16px;
+    }
+
+    @media (max-width: 900px) {
+        .detail-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+
+    @media (max-width: 600px) {
+        .detail-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .detail-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .detail-item.full-width {
+        grid-column: 1 / -1;
+    }
+
+    .detail-label {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .detail-value {
+        font-size: 13px;
+        color: var(--text-primary);
+        word-break: break-all;
+    }
+
+    .detail-loading {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-muted);
+        font-size: 13px;
+    }
+
+    .loading-spinner-small {
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--border-color);
+        border-top-color: var(--accent-primary);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+
+    .error-text {
+        color: var(--accent-danger);
+    }
+
+    /* 头部操作区 */
+    .header-actions {
+        display: flex;
+        gap: 8px;
+    }
+
+    /* 表格调整 */
+    .data-table th:first-child,
+    .data-table td:first-child {
+        width: 40px;
+        text-align: center;
+    }
+
+    .data-table td.filename {
+        font-weight: 500;
+    }
+</style>
+{% endblock %}

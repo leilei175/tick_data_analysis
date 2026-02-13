@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>相关性分析 - 高频因子分析平台</title>
+    {% extends "base.html" %}
+    {% block header_title %}相关性分析{% endblock %}
+    {% block extra_css %}
+    <style>
+        .page-header {
+            margin-bottom: 24px;
+        }
+        .page-title {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .page-subtitle {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-top: 4px;
+        }
+        .chart-container {
+            min-height: 600px;
+        }
+        .method-selector {
+            display: flex;
+            gap: 12px;
+        }
+        .method-btn {
+            padding: 8px 16px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-size: 13px;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+        .method-btn:hover, .method-btn.active {
+            border-color: var(--accent-primary);
+            color: var(--accent-primary);
+        }
+        .info-banner {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .info-banner svg {
+            width: 24px;
+            height: 24px;
+            color: var(--accent-warning);
+            flex-shrink: 0;
+        }
+        .info-banner-text {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+        .info-banner-text strong {
+            color: var(--accent-warning);
+        }
+        .factor-selector {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .factor-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+        .factor-checkbox:hover {
+            border-color: var(--accent-primary);
+        }
+        .factor-checkbox.selected {
+            background: rgba(59, 130, 246, 0.15);
+            border-color: var(--accent-primary);
+        }
+        .factor-checkbox input {
+            accent-color: var(--accent-primary);
+        }
+        .insights-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-top: 20px;
+        }
+        @media (max-width: 900px) {
+            .insights-grid { grid-template-columns: 1fr; }
+        }
+        .insight-card {
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-md);
+            padding: 16px;
+        }
+        .insight-title {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+        .insight-value {
+            font-size: 16px;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            word-break: break-all;
+        }
+        .insight-value.positive { color: var(--accent-success); }
+        .insight-value.negative { color: var(--accent-danger); }
+    </style>
+    {% endblock %}
+</head>
+<body>
+    {% block content %}
+    <div class="page-header fade-in">
+        <h1 class="page-title">因子相关性分析</h1>
+        <p class="page-subtitle">分析各高频因子之间的截面相关性</p>
+    </div>
+
+    <div class="info-banner fade-in">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <div class="info-banner-text">
+            <strong>说明：</strong>计算各因子在截面上的日均值相关性。点击下方复选框选择要分析的因子。
+        </div>
+    </div>
+
+    <!-- 因子选择器 -->
+    <div class="factor-selector mb-24 fade-in" id="factorSelector">
+        <!-- 因子选择器将由JS生成 -->
+    </div>
+
+    <div class="card mb-24 fade-in">
+        <div class="card-header">
+            <div>
+                <div class="card-title">相关性热力图</div>
+                <div class="card-subtitle">因子日均值Spearman相关系数</div>
+            </div>
+            <button class="btn btn-primary" onclick="calculateCorrelation()">
+                计算相关性
+            </button>
+        </div>
+        <div class="chart-container">
+            <div id="correlationChart" style="height:500px;">
+                <div class="loading" style="padding:60px;">
+                    <div class="loading-spinner"></div>
+                    <p style="margin-top:12px;color:var(--text-muted)">选择至少2个因子后点击"计算相关性"</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="insights-grid mb-24">
+        <div class="insight-card">
+            <div class="insight-title">最高正相关因子对</div>
+            <div class="insight-value positive" id="maxCorrelation">-</div>
+        </div>
+        <div class="insight-card">
+            <div class="insight-title">最高负相关因子对</div>
+            <div class="insight-value negative" id="minCorrelation">-</div>
+        </div>
+        <div class="insight-card">
+            <div class="insight-title">平均相关系数</div>
+            <div class="insight-value" id="avgCorrelation">-</div>
+        </div>
+    </div>
+    {% endblock %}
+
+    {% block extra_js %}
+    <script>
+        let allFactors = [];
+        let selectedFactors = [];
+        let currentYear = 2026;
+
+        async function loadCorrelationPage() {
+            try {
+                const factorsRes = await fetch('/api/factors/list');
+                const data = await factorsRes.json();
+
+                if (data.status !== 'success') return;
+
+                allFactors = data.data.factors;
+                currentYear = data.data.years[0] || 2026;
+
+                // 渲染因子选择器
+                renderFactorSelector();
+            } catch (error) {
+                console.error('Error loading factors:', error);
+            }
+        }
+
+        function renderFactorSelector() {
+            const container = document.getElementById('factorSelector');
+            container.innerHTML = allFactors.map((f, i) => `
+                <label class="factor-checkbox ${selectedFactors.includes(f) ? 'selected' : ''}">
+                    <input type="checkbox" value="${f}" ${selectedFactors.includes(f) ? 'checked' : ''}
+                           onchange="toggleFactor('${f}')">
+                    ${f}
+                </label>
+            `).join('');
+        }
+
+        function toggleFactor(factor) {
+            if (selectedFactors.includes(factor)) {
+                selectedFactors = selectedFactors.filter(f => f !== factor);
+            } else {
+                selectedFactors.push(factor);
+            }
+            renderFactorSelector();
+        }
+
+        async function calculateCorrelation() {
+            if (selectedFactors.length < 2) {
+                alert('请至少选择2个因子');
+                return;
+            }
+
+            const chartDiv = document.getElementById('correlationChart');
+            chartDiv.innerHTML = '<div class="loading" style="padding:60px;"><div class="loading-spinner"></div><p style="margin-top:12px;color:var(--text-muted)">计算中...</p></div>';
+
+            try {
+                const params = selectedFactors.map(f => `factors=${encodeURIComponent(f)}`).join('&');
+                const res = await fetch(`/api/factor/cross-correlation?${params}&year=${currentYear}`);
+                const data = await res.json();
+
+                if (data.status !== 'success') {
+                    chartDiv.innerHTML = '<div class="error-cell">计算失败: ' + data.message + '</div>';
+                    return;
+                }
+
+                const corr = data.data.correlation_matrix;
+                const factors = Object.keys(corr);
+
+                // 计算统计数据
+                let maxCorr = { val: -1, pair: '' };
+                let minCorr = { val: 1, pair: '' };
+                let sum = 0, count = 0;
+
+                for (let i = 0; i < factors.length; i++) {
+                    for (let j = i + 1; j < factors.length; j++) {
+                        const v = corr[factors[i]][factors[j]];
+                        if (v !== null && v !== undefined) {
+                            if (v > maxCorr.val) {
+                                maxCorr = { val: v, pair: `${factors[i]} & ${factors[j]}` };
+                            }
+                            if (v < minCorr.val) {
+                                minCorr = { val: v, pair: `${factors[i]} & ${factors[j]}` };
+                            }
+                            sum += Math.abs(v);
+                            count++;
+                        }
+                    }
+                }
+
+                document.getElementById('maxCorrelation').textContent =
+                    count > 0 ? `${maxCorr.pair}\n(${maxCorr.val.toFixed(3)})` : '-';
+                document.getElementById('minCorrelation').textContent =
+                    count > 0 ? `${minCorr.pair}\n(${minCorr.val.toFixed(3)})` : '-';
+                document.getElementById('avgCorrelation').textContent =
+                    count > 0 ? (sum / count).toFixed(3) : '-';
+
+                // 绘制热力图
+                const z = [];
+                for (let i = 0; i < factors.length; i++) {
+                    z.push(factors.map(f => {
+                        const v = corr[factors[i]][f];
+                        return v !== null && v !== undefined ? v : 0;
+                    }));
+                }
+
+                const heatmap = {
+                    z: z,
+                    x: factors,
+                    y: factors,
+                    type: 'heatmap',
+                    colorscale: [
+                        [0, '#ef4444'],
+                        [0.5, '#1f2937'],
+                        [1, '#10b981']
+                    ],
+                    zmin: -1,
+                    zmax: 1,
+                    hoverongaps: false,
+                    hovertemplate: '%{x} & %{y}<br>相关系数: %{z:.3f}<extra></extra>'
+                };
+
+                const layout = {
+                    paper_bgcolor: 'transparent',
+                    plot_bgcolor: 'transparent',
+                    font: { color: '#94a3b8', family: 'Inter', size: 11 },
+                    margin: { t: 30, r: 30, b: 100, l: 100 },
+                    xaxis: { tickangle: -45 },
+                    yaxis: { autorange: 'reversed' }
+                };
+
+                Plotly.newPlot('correlationChart', [heatmap], layout, {responsive: true, displayModeBar: false});
+
+            } catch (error) {
+                console.error('Error calculating correlation:', error);
+                chartDiv.innerHTML = '<div class="error-cell">计算失败: ' + error.message + '</div>';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', loadCorrelationPage);
+    </script>
+    {% endblock %}
+</body>
+</html>

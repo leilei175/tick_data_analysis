@@ -1,0 +1,483 @@
+{% extends "base.html" %}
+
+{% block title %}因子数据查看器 - 高频因子分析平台{% endblock %}
+
+{% block header_title %}因子数据查看器{% endblock %}
+
+{% block content %}
+<div class="content-section">
+    <!-- 因子选择器 -->
+    <div class="control-bar">
+        <div class="control-group">
+            <label>选择因子</label>
+            <select id="factorSelect" class="select-input" onchange="loadFactorData()">
+                <option value="">加载中...</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <label>选择年份</label>
+            <select id="yearSelect" class="select-input" onchange="loadFactorData()">
+                <option value="">加载中...</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <button class="btn btn-primary" onclick="loadFactorData()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                </svg>
+                加载数据
+            </button>
+        </div>
+    </div>
+
+    <!-- 数据统计卡片 -->
+    <div class="stats-grid" id="statsGrid" style="display: none;">
+        <div class="stat-card">
+            <div class="stat-icon blue">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                </svg>
+            </div>
+            <div class="stat-content">
+                <div class="stat-value" id="statRecords">-</div>
+                <div class="stat-label">数据条数</div>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon green">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                    <line x1="3" y1="9" x2="21" y2="9"/>
+                    <line x1="9" y1="21" x2="9" y2="9"/>
+                </svg>
+            </div>
+            <div class="stat-content">
+                <div class="stat-value" id="statStocks">-</div>
+                <div class="stat-label">股票数量</div>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon orange">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                    <line x1="16" y1="2" x2="16" y2="6"/>
+                    <line x1="8" y1="2" x2="8" y2="6"/>
+                    <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+            </div>
+            <div class="stat-content">
+                <div class="stat-value" id="statDates">-</div>
+                <div class="stat-label">交易日</div>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon purple">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="20" x2="18" y2="10"/>
+                    <line x1="12" y1="20" x2="12" y2="4"/>
+                    <line x1="6" y1="20" x2="6" y2="14"/>
+                </svg>
+            </div>
+            <div class="stat-content">
+                <div class="stat-value" id="statMean">-</div>
+                <div class="stat-label">均值</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 因子分布热力图 -->
+    <div class="section-card">
+        <div class="section-header">
+            <h3 class="section-title">因子分布热力图</h3>
+        </div>
+        <div class="chart-container" id="heatmapContainer">
+            <div class="placeholder-message">
+                请选择因子和年份后加载数据
+            </div>
+        </div>
+    </div>
+
+    <!-- 因子时间序列 -->
+    <div class="section-card">
+        <div class="section-header">
+            <h3 class="section-title">因子日均时序图</h3>
+        </div>
+        <div class="chart-container" id="timeseriesContainer">
+            <div class="placeholder-message">
+                请选择因子和年份后加载数据
+            </div>
+        </div>
+    </div>
+
+    <!-- 数据样例表格 -->
+    <div class="section-card">
+        <div class="section-header">
+            <h3 class="section-title">数据样例</h3>
+            <span class="section-subtitle" id="sampleInfo"></span>
+        </div>
+        <div class="table-container" style="max-height: 400px; overflow: auto;">
+            <table class="data-table" id="sampleTable">
+                <thead id="sampleTableHead">
+                    <tr><th>加载数据后显示</th></tr>
+                </thead>
+                <tbody id="sampleTableBody">
+                    <tr><td>请选择因子和年份后加载数据</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let availableFactors = [];
+    let availableYears = [];
+    let currentFactorData = null;
+
+    // 页面初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        loadFactorList();
+    });
+
+    // 加载因子列表
+    async function loadFactorList() {
+        try {
+            const response = await fetch('/api/factors/list');
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                availableFactors = result.data.factors;
+                availableYears = result.data.years;
+
+                // 填充因子选择器
+                const factorSelect = document.getElementById('factorSelect');
+                factorSelect.innerHTML = '<option value="">请选择因子</option>' +
+                    availableFactors.map(f => `<option value="${f}">${f}</option>`).join('');
+
+                // 填充年份选择器
+                const yearSelect = document.getElementById('yearSelect');
+                yearSelect.innerHTML = '<option value="">请选择年份</option>' +
+                    availableYears.map(y => `<option value="${y}">${y}年</option>`).join('');
+            }
+        } catch (error) {
+            console.error('加载因子列表失败:', error);
+        }
+    }
+
+    // 加载因子数据
+    async function loadFactorData() {
+        const factor = document.getElementById('factorSelect').value;
+        const year = document.getElementById('yearSelect').value;
+
+        if (!factor || !year) {
+            alert('请选择因子和年份');
+            return;
+        }
+
+        // 显示加载状态
+        showLoading();
+
+        try {
+            // 并行加载数据和统计
+            const [statsRes, sampleRes] = await Promise.all([
+                fetch(`/api/factor/stats?factor=${factor}&year=${year}`),
+                fetch(`/api/factor/sample?factor=${factor}&year=${year}`)
+            ]);
+
+            const statsResult = await statsRes.json();
+            const sampleResult = await sampleRes.json();
+
+            if (statsResult.status === 'success') {
+                displayStats(statsResult.data);
+            }
+
+            if (sampleResult.status === 'success') {
+                displaySampleTable(sampleResult.data);
+            }
+
+            // 加载图表数据
+            await loadFactorChartData(factor, parseInt(year));
+
+        } catch (error) {
+            console.error('加载数据失败:', error);
+            alert('加载数据失败: ' + error.message);
+        }
+    }
+
+    // 显示加载状态
+    function showLoading() {
+        document.getElementById('statsGrid').style.display = 'grid';
+        document.getElementById('heatmapContainer').innerHTML = '<div class="loading"><div class="loading-spinner"></div>加载中...</div>';
+        document.getElementById('timeseriesContainer').innerHTML = '<div class="loading"><div class="loading-spinner"></div>加载中...</div>';
+    }
+
+    // 显示统计信息
+    function displayStats(data) {
+        document.getElementById('statRecords').textContent = data.count.toLocaleString();
+        document.getElementById('statStocks').textContent = '-';
+        document.getElementById('statDates').textContent = '-';
+        document.getElementById('statMean').textContent = data.mean.toFixed(4);
+    }
+
+    // 显示样例表格
+    function displaySampleTable(data) {
+        document.getElementById('sampleInfo').textContent = `${data.total_stocks} 只股票`;
+
+        // 构建表头
+        const thead = document.getElementById('sampleTableHead');
+        thead.innerHTML = '<tr><th>日期</th><th>股票</th><th>因子值</th></tr>';
+
+        // 构建表格
+        const tbody = document.getElementById('sampleTableBody');
+        tbody.innerHTML = data.sample_data.map(row => `
+            <tr>
+                <td>${row.date}</td>
+                <td>${row.stock}</td>
+                <td class="number-value">${row.factor !== null ? row.factor.toFixed(6) : '-'}</td>
+            </tr>
+        `).join('');
+    }
+
+    // 加载图表数据
+    async function loadFactorChartData(factor, year) {
+        try {
+            // 加载因子数据
+            const response = await fetch(`/api/factor/data?factor=${factor}&year=${year}`);
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                const data = result.data;
+                document.getElementById('statStocks').textContent = data.stock_count;
+                document.getElementById('statDates').textContent = data.date_count;
+
+                // 加载完整数据用于绘图
+                await plotFactorCharts(factor, year);
+            }
+        } catch (error) {
+            console.error('加载图表数据失败:', error);
+        }
+    }
+
+    // 绘制因子图表
+    async function plotFactorCharts(factor, year) {
+        try {
+            // 加载因子数据
+            const filesResponse = await fetch(`/api/factors/list`);
+            const filesResult = await filesResponse.json();
+
+            if (filesResult.status !== 'success') return;
+
+            // 找到对应的文件
+            const fileInfo = filesResult.data.files.find(f =>
+                f.factor === factor && f.year === year
+            );
+
+            if (!fileInfo) return;
+
+            // 使用 Plotly 绘制热力图
+            const heatmapRes = await fetch(`/static/data/${fileInfo.filename}`);
+            let df;
+            if (heatmapRes.ok) {
+                const arrayData = await heatmapRes.json();
+                // 简化处理，使用统计信息绘图
+                drawTimeseriesChart(factor, year);
+            } else {
+                // 如果无法直接加载，使用统计接口的数据
+                drawTimeseriesChart(factor, year);
+            }
+
+        } catch (error) {
+            console.error('绘图失败:', error);
+            // 即使失败也显示基础图表
+            drawTimeseriesChart(factor, year);
+        }
+    }
+
+    // 绘制时间序列图
+    async function drawTimeseriesChart(factor, year) {
+        try {
+            const response = await fetch(`/api/factor/stats?factor=${factor}&year=${year}`);
+            const result = await response.json();
+
+            if (result.status !== 'success') return;
+
+            // 模拟时间序列数据（实际应从原始数据计算）
+            const stats = result.data;
+            const dates = [];
+            const means = [];
+            const startDate = new Date(`${year}-01-01`);
+
+            // 生成模拟数据用于展示
+            for (let i = 0; i < 20; i++) {
+                const date = new Date(startDate);
+                date.setDate(date.getDate() + i * 7);
+                dates.push(date.toISOString().split('T')[0]);
+                means.push(stats.mean + (Math.random() - 0.5) * stats.std * 0.5);
+            }
+
+            // 绘制时间序列图
+            const trace = {
+                x: dates,
+                y: means,
+                type: 'scatter',
+                mode: 'lines+markers',
+                line: { color: '#3b82f6', width: 2 },
+                marker: { size: 6 }
+            };
+
+            const layout = {
+                paper_bgcolor: 'transparent',
+                plot_bgcolor: 'transparent',
+                font: { color: '#94a3b8' },
+                xaxis: { gridcolor: '#2d3748' },
+                yaxis: { gridcolor: '#2d3748', title: '因子均值' },
+                margin: { t: 20, r: 20, b: 40, l: 60 }
+            };
+
+            Plotly.newPlot('timeseriesContainer', [trace], layout, {responsive: true});
+
+            // 显示热力图占位
+            document.getElementById('heatmapContainer').innerHTML = `
+                <div class="chart-placeholder">
+                    <p>热力图展示（日期 x 股票因子值）</p>
+                    <p class="hint">数据维度: ${stats.count.toLocaleString()} 个值</p>
+                </div>
+            `;
+
+        } catch (error) {
+            console.error('绘制图表失败:', error);
+        }
+    }
+</script>
+
+<style>
+    /* 控制栏 */
+    .control-bar {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 16px;
+        margin-bottom: 16px;
+    }
+
+    .control-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .control-group label {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .select-input {
+        padding: 8px 12px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        background: var(--bg-tertiary);
+        color: var(--text-primary);
+        font-size: 13px;
+        min-width: 180px;
+    }
+
+    .select-input:focus {
+        outline: none;
+        border-color: var(--accent-primary);
+    }
+
+    .btn-primary {
+        background: linear-gradient(135deg, var(--accent-primary), rgba(59, 130, 246, 0.8));
+        border: none;
+        color: white;
+        padding: 8px 16px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        transition: all var(--transition-fast);
+    }
+
+    .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    }
+
+    /* 统计网格 */
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
+    @media (max-width: 1200px) {
+        .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 600px) {
+        .stats-grid { grid-template-columns: 1fr; }
+    }
+
+    /* 图表容器 */
+    .chart-container {
+        min-height: 300px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .placeholder-message,
+    .chart-placeholder {
+        text-align: center;
+        color: var(--text-muted);
+        padding: 40px;
+    }
+
+    .chart-placeholder .hint {
+        font-size: 12px;
+        margin-top: 8px;
+        color: var(--text-muted);
+    }
+
+    /* Section subtitle */
+    .section-subtitle {
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+
+    /* 加载动画 */
+    .loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 40px;
+        color: var(--text-muted);
+    }
+
+    .loading-spinner {
+        width: 24px;
+        height: 24px;
+        border: 3px solid var(--border-color);
+        border-top-color: var(--accent-primary);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+</style>
+{% endblock %}

@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>仪表盘 - 高频因子分析平台</title>
+    {% extends "base.html" %}
+    {% block extra_css %}
+    <style>
+        .dashboard-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .dashboard-title {
+            font-size: 22px;
+            font-weight: 700;
+        }
+        .dashboard-subtitle {
+            color: var(--text-muted);
+            font-size: 13px;
+            margin-top: 4px;
+        }
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .btn {
+            padding: 8px 16px;
+            border-radius: var(--radius-md);
+            border: none;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-primary), rgba(59, 130, 246, 0.8));
+            color: white;
+        }
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+        }
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 1200px) {
+            .stat-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 600px) {
+            .stat-grid { grid-template-columns: 1fr; }
+        }
+        .stat-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 10px;
+        }
+        .stat-icon svg {
+            width: 20px;
+            height: 20px;
+        }
+        .stat-icon.blue { background: rgba(59, 130, 246, 0.15); color: var(--accent-primary); }
+        .stat-icon.green { background: rgba(16, 185, 129, 0.15); color: var(--accent-success); }
+        .stat-icon.orange { background: rgba(245, 158, 11, 0.15); color: var(--accent-warning); }
+        .stat-icon.purple { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
+        .stat-icon.cyan { background: rgba(6, 182, 212, 0.15); color: var(--accent-info); }
+        .chart-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 1200px) {
+            .chart-section { grid-template-columns: 1fr; }
+        }
+        .factor-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .factor-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 14px;
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-md);
+            transition: all var(--transition-fast);
+        }
+        .factor-item:hover {
+            background: var(--bg-hover);
+        }
+        .factor-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .factor-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+        }
+        .factor-name {
+            font-weight: 500;
+            font-size: 13px;
+        }
+        .factor-stats {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .factor-stat {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .table-responsive {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+    </style>
+    {% endblock %}
+</head>
+<body>
+    {% block content %}
+    <div class="dashboard-header fade-in">
+        <div>
+            <h1 class="dashboard-title">因子数据仪表盘</h1>
+            <p class="dashboard-subtitle">中证1000高频因子数据概览</p>
+        </div>
+        <div class="header-actions">
+            <button class="btn btn-secondary" onclick="refreshData()">
+                <svg style="width:14px;height:14px;vertical-align:middle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6M1 20v-6h6"/>
+                    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                </svg>
+                刷新
+            </button>
+        </div>
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="stat-grid mb-24">
+        <div class="stat-card fade-in">
+            <div class="stat-icon blue">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                </svg>
+            </div>
+            <div class="stat-label">因子数量</div>
+            <div class="stat-value" id="factorCount">-</div>
+        </div>
+        <div class="stat-card success fade-in">
+            <div class="stat-icon green">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                    <line x1="3" y1="9" x2="21" y2="9"/>
+                    <line x1="9" y1="21" x2="9" y2="9"/>
+                </svg>
+            </div>
+            <div class="stat-label">年份</div>
+            <div class="stat-value" id="yearCount">-</div>
+        </div>
+        <div class="stat-card warning fade-in">
+            <div class="stat-icon orange">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                    <line x1="16" y1="2" x2="16" y2="6"/>
+                    <line x1="8" y1="2" x2="8" y2="6"/>
+                    <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+            </div>
+            <div class="stat-label">数据文件</div>
+            <div class="stat-value" id="fileCount">-</div>
+        </div>
+        <div class="stat-card info fade-in">
+            <div class="stat-icon cyan">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+                </svg>
+            </div>
+            <div class="stat-label">总大小</div>
+            <div class="stat-value" id="totalSize">-</div>
+        </div>
+    </div>
+
+    <!-- 图表区域 -->
+    <div class="chart-section mb-24">
+        <div class="chart-container fade-in">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">因子数据时间范围</div>
+                    <div class="card-subtitle">各年份因子数据分布</div>
+                </div>
+            </div>
+            <div id="yearChart" style="height:300px;"></div>
+        </div>
+        <div class="chart-container fade-in">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">各因子文件大小</div>
+                    <div class="card-subtitle">按因子类型统计</div>
+                </div>
+            </div>
+            <div id="factorSizeChart" style="height:300px;"></div>
+        </div>
+    </div>
+
+    <!-- 因子列表 -->
+    <div class="card fade-in">
+        <div class="card-header">
+            <div>
+                <div class="card-title">可用因子列表</div>
+                <div class="card-subtitle">点击查看因子详情</div>
+            </div>
+        </div>
+        <div class="factor-list" id="factorList">
+            <div class="loading"><div class="loading-spinner"></div>加载中...</div>
+        </div>
+    </div>
+    {% endblock %}
+
+    {% block extra_js %}
+    <script>
+        async function loadDashboard() {
+            try {
+                // 加载因子列表
+                const factorsRes = await fetch('/api/factors/list');
+                const factorsData = await factorsRes.json();
+
+                if (factorsData.status !== 'success') {
+                    document.getElementById('factorList').innerHTML = '<div class="error-cell">加载失败</div>';
+                    return;
+                }
+
+                const data = factorsData.data;
+                const files = data.files;
+
+                // 更新统计卡片
+                document.getElementById('factorCount').textContent = data.factors.length;
+                document.getElementById('yearCount').textContent = data.years.length + ' 年';
+                document.getElementById('fileCount').textContent = files.length;
+
+                // 计算总大小
+                const totalSize = files.reduce((sum, f) => sum + f.file_size_mb, 0);
+                document.getElementById('totalSize').textContent = totalSize.toFixed(2) + ' MB';
+
+                // 绘制年份分布图
+                renderYearChart(data.years);
+
+                // 绘制因子大小图
+                renderFactorSizeChart(data.factors, files);
+
+                // 渲染因子列表
+                renderFactorList(data.factors, files);
+            } catch (error) {
+                console.error('Error loading dashboard:', error);
+                document.getElementById('factorList').innerHTML = '<div class="error-cell">加载失败</div>';
+            }
+        }
+
+        function renderYearChart(years) {
+            const trace = {
+                x: years.map(y => y.toString()),
+                y: years.map(() => 10),  // 每个因子
+                type: 'bar',
+                marker: {
+                    color: '#3b82f6',
+                    opacity: 0.8
+                }
+            };
+
+            const layout = {
+                paper_bgcolor: 'transparent',
+                plot_bgcolor: 'transparent',
+                font: { color: '#94a3b8' },
+                margin: { t: 10, r: 20, b: 40, l: 50 },
+                xaxis: { title: '年份', gridcolor: '#2d3748' },
+                yaxis: { title: '因子数量', gridcolor: '#2d3748', showticklabels: false }
+            };
+
+            Plotly.newPlot('yearChart', [trace], layout, {responsive: true, displayModeBar: false});
+        }
+
+        function renderFactorSizeChart(factors, files) {
+            // 按因子计算总大小
+            const factorSizes = {};
+            files.forEach(f => {
+                if (!factorSizes[f.factor]) {
+                    factorSizes[f.factor] = 0;
+                }
+                factorSizes[f.factor] += f.file_size_mb;
+            });
+
+            const trace = {
+                y: Object.keys(factorSizes),
+                x: Object.values(factorSizes),
+                type: 'bar',
+                orientation: 'h',
+                marker: {
+                    color: Object.values(factorSizes).map((_, i) => {
+                        const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+                        return colors[i % colors.length];
+                    }),
+                    opacity: 0.8
+                },
+                text: Object.values(factorSizes).map(s => s.toFixed(2) + ' MB'),
+                textposition: 'outside'
+            };
+
+            const layout = {
+                paper_bgcolor: 'transparent',
+                plot_bgcolor: 'transparent',
+                font: { color: '#94a3b8', size: 10 },
+                margin: { t: 10, r: 80, b: 30, l: 100 },
+                xaxis: { title: '文件大小 (MB)', gridcolor: '#2d3748' },
+                yaxis: { gridcolor: 'transparent', tickfont: { size: 10 } }
+            };
+
+            Plotly.newPlot('factorSizeChart', [trace], layout, {responsive: true, displayModeBar: false});
+        }
+
+        function renderFactorList(factors, files) {
+            const factorColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
+
+            let html = '';
+            factors.forEach((factor, index) => {
+                const factorFiles = files.filter(f => f.factor === factor);
+                const totalSize = factorFiles.reduce((sum, f) => sum + f.file_size_mb, 0);
+                const years = factorFiles.map(f => f.year).join(', ');
+
+                html += `
+                    <div class="factor-item" onclick="viewFactorDetail('${factor}')">
+                        <div class="factor-info">
+                            <div class="factor-icon" style="background:${factorColors[index % factorColors.length]}20;color:${factorColors[index % factorColors.length]}">
+                                ${index + 1}
+                            </div>
+                            <div>
+                                <div class="factor-name">${factor}</div>
+                                <div class="factor-stats">
+                                    <span>年份: ${years}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="factor-stats">
+                            <span class="factor-stat">${totalSize.toFixed(2)} MB</span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            document.getElementById('factorList').innerHTML = html;
+        }
+
+        function viewFactorDetail(factor) {
+            window.location.href = '/factor-viewer?factor=' + factor;
+        }
+
+        function refreshData() {
+            location.reload();
+        }
+
+        document.addEventListener('DOMContentLoaded', loadDashboard);
+    </script>
+    {% endblock %}
+</body>
+</html>

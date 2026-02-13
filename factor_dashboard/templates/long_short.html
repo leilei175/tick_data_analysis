@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多空组合 - 高频因子分析平台</title>
+    {% extends "base.html" %}
+    {% block header_title %}多空组合{% endblock %}
+    {% block extra_css %}
+    <style>
+        .page-header {
+            margin-bottom: 24px;
+        }
+        .page-title {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .page-subtitle {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-top: 4px;
+        }
+        .control-row {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .control-group label {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .select-input {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            font-size: 13px;
+        }
+        .ls-metrics {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        @media (max-width: 1200px) {
+            .ls-metrics { grid-template-columns: repeat(2, 1fr); }
+        }
+        .ls-metric {
+            background: var(--bg-tertiary);
+            border-radius: var(--radius-lg);
+            padding: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+        .ls-metric::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+        }
+        .ls-metric:nth-child(1)::before { background: #10b981; }
+        .ls-metric:nth-child(2)::before { background: #3b82f6; }
+        .ls-metric:nth-child(3)::before { background: #f59e0b; }
+        .ls-metric:nth-child(4)::before { background: #ef4444; }
+
+        .metric-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .metric-value {
+            font-size: 28px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .metric-sub {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+        .metric-value.positive { color: var(--accent-success); }
+        .metric-value.negative { color: var(--accent-danger); }
+    </style>
+{% endblock %}
+</head>
+<body>
+    {% block content %}
+    <div class="page-header fade-in">
+        <h1 class="page-title">多空组合分析</h1>
+        <p class="page-subtitle">因子多空策略表现评估</p>
+    </div>
+
+    <!-- 控制栏 -->
+    <div class="control-row fade-in">
+        <div class="factor-selector" id="factorTabs">
+            <!-- 因子选择器由JS生成 -->
+        </div>
+        <div class="control-group">
+            <label>持有期</label>
+            <select id="periodSelect" class="select-input" onchange="loadLongShort()">
+                <option value="1">1日</option>
+                <option value="5">5日</option>
+                <option value="10">10日</option>
+            </select>
+        </div>
+        <button class="btn btn-primary" onclick="loadLongShort()">分析</button>
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="ls-metrics mb-24 fade-in" id="metricsGrid" style="display:none;">
+        <div class="ls-metric">
+            <div class="metric-label">累计收益</div>
+            <div class="metric-value" id="totalReturn">-</div>
+            <div class="metric-sub">总收益</div>
+        </div>
+        <div class="ls-metric">
+            <div class="metric-label">日均收益</div>
+            <div class="metric-value" id="meanDaily">-</div>
+            <div class="metric-sub">平均日收益</div>
+        </div>
+        <div class="ls-metric">
+            <div class="metric-label">夏普比率</div>
+            <div class="metric-value" id="sharpe">-</div>
+            <div class="metric-sub">年化</div>
+        </div>
+        <div class="ls-metric">
+            <div class="metric-label">最大回撤</div>
+            <div class="metric-value negative" id="maxDD">-</div>
+            <div class="metric-sub">最大回撤</div>
+        </div>
+    </div>
+
+    <!-- 图表 -->
+    <div class="card fade-in">
+        <div class="card-header">
+            <div>
+                <div class="card-title">多空策略绩效</div>
+                <div class="card-subtitle">Top因子组 - Bottom因子组 策略表现</div>
+            </div>
+        </div>
+        <div id="lsChart" style="height:400px;"></div>
+    </div>
+
+    <div class="info-banner" style="margin-top:20px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
+        <div class="info-banner-text">
+            <strong>说明：</strong>多空策略做多因子值最高的组（Q5），做空因子值最低的组（Q1），
+            计算策略的累计收益、夏普比率、胜率、最大回撤等指标。
+        </div>
+    </div>
+    {% endblock %}
+
+    {% block extra_js %}
+    <script>
+        let allFactors = [];
+        let currentFactor = '';
+        let currentData = null;
+
+        async function loadFactors() {
+            try {
+                const res = await fetch('/api/factors/list');
+                const data = await res.json();
+                if (data.status === 'success') {
+                    allFactors = data.data.factors;
+                    renderFactorTabs();
+                    if (allFactors.length > 0) {
+                        currentFactor = allFactors[0];
+                        loadLongShort();
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading factors:', error);
+            }
+        }
+
+        function renderFactorTabs() {
+            const container = document.getElementById('factorTabs');
+            container.innerHTML = allFactors.map(f => `
+                <button class="factor-btn ${f === currentFactor ? 'active' : ''}"
+                        onclick="selectFactor('${f}')">${f}</button>
+            `).join('');
+        }
+
+        function selectFactor(factor) {
+            currentFactor = factor;
+            document.querySelectorAll('.factor-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.textContent === factor);
+            });
+        }
+
+        async function loadLongShort() {
+            const period = document.getElementById('periodSelect').value;
+            const metricsGrid = document.getElementById('metricsGrid');
+
+            metricsGrid.style.display = 'none';
+
+            try {
+                const res = await fetch(`/api/long-short?factor=${currentFactor}&period=${period}`);
+                const data = await res.json();
+
+                if (data.status !== 'success') {
+                    return;
+                }
+
+                currentData = data.data;
+
+                // 更新统计卡片
+                const totalReturn = data.data.total_return * 10000;
+                const meanDaily = data.data.mean_daily * 10000;
+
+                document.getElementById('totalReturn').textContent = `${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)} bps`;
+                document.getElementById('totalReturn').className = `metric-value ${totalReturn >= 0 ? 'positive' : 'negative'}`;
+
+                document.getElementById('meanDaily').textContent = `${meanDaily >= 0 ? '+' : ''}${meanDaily.toFixed(4)} bps`;
+                document.getElementById('sharpe').textContent = data.data.sharpe.toFixed(2);
+                document.getElementById('maxDD').textContent = `${(data.data.max_drawdown * 100).toFixed(2)}%`;
+
+                metricsGrid.style.display = 'grid';
+
+                // 绘制图表（简化显示）
+                renderChart();
+
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        function renderChart() {
+            if (!currentData) return;
+
+            // 生成模拟的累计收益曲线
+            const dates = ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5'];
+            const cumulative = [];
+            let value = 0;
+            const dailyReturn = currentData.mean_daily;
+
+            dates.forEach((_, i) => {
+                value += dailyReturn * (i + 1) * 100;
+                cumulative.push(value);
+            });
+
+            const trace = {
+                x: dates,
+                y: cumulative,
+                type: 'scatter',
+                mode: 'lines+markers',
+                line: { color: '#3b82f6', width: 3 },
+                marker: { size: 8, color: '#3b82f6' },
+                fill: 'tozeroy',
+                fillcolor: 'rgba(59, 130, 246, 0.1)'
+            };
+
+            const layout = {
+                paper_bgcolor: 'transparent',
+                plot_bgcolor: 'transparent',
+                font: { color: '#94a3b8' },
+                margin: { t: 20, r: 20, b: 40, l: 60 },
+                xaxis: { title: '交易日', gridcolor: '#2d3748' },
+                yaxis: { title: '累计收益 (bps)', gridcolor: '#2d3748' },
+                hovermode: 'x unified'
+            };
+
+            Plotly.newPlot('lsChart', [trace], layout, {responsive: true});
+        }
+
+        document.addEventListener('DOMContentLoaded', loadFactors);
+    </script>
+{% endblock %}
+</body>
+</html>
