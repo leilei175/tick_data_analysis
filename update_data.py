@@ -53,13 +53,12 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# Tushare
-try:
-    import tushare as ts
-    HAS_TUSHARE = True
-except ImportError:
-    HAS_TUSHARE = False
-    print("警告: 未安装 tushare")
+# 导入通用模块
+from mylib.tushare_client import init_tushare as _init_tushare
+from mylib.tushare_client import get_trading_days
+from mylib.constants import DAILY_FIELDS, DAILY_BASIC_FIELDS
+from mylib.date_utils import parse_date as _parse_date
+from mylib.date_utils import date_to_str as _date_to_str
 
 # =============================================================================
 # 配置
@@ -78,51 +77,15 @@ DATA_DIRS = {
     'balance_daily': os.path.join(DEFAULT_DATA_DIR, 'balance_daily/'),
 }
 
-# 日线数据字段
-DAILY_FIELDS = [
-    'ts_code', 'trade_date', 'open', 'high', 'low', 'close',
-    'pre_close', 'change', 'pct_chg', 'vol', 'amount'
-]
-
-# 每日基本面数据字段
-DAILY_BASIC_FIELDS = [
-    'ts_code', 'trade_date', 'close', 'turnover_rate', 'turnover_rate_f',
-    'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm',
-    'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share',
-    'total_mv', 'circ_mv'
-]
+# 字段配置已从 mylib.constants 导入
 
 # 当前日期（模拟2026年2月11日）
 TODAY = datetime(2026, 2, 11).date()
 
-# =============================================================================
-# Token 管理
-# =============================================================================
-
-def get_token_from_config(config_path: str = None) -> str:
-    """从配置文件读取 Token"""
-    if config_path is None:
-        # 默认使用脚本所在目录下的 config.py
-        config_path = os.path.join(_SCRIPT_DIR, 'config.py')
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("config", config_path)
-        config = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(config)
-        return config.tushare_tk
-    except Exception as e:
-        raise ValueError(f"无法从 {config_path} 读取 Token: {e}")
-
-
 def init_tushare():
     """初始化 Tushare"""
-    if not HAS_TUSHARE:
-        raise ImportError("未安装 tushare")
-
-    token = get_token_from_config()
-    ts.set_token(token)
-    pro = ts.pro_api()
-    return pro
+    config_path = os.path.join(_SCRIPT_DIR, 'config.py')
+    return _init_tushare(config_path=config_path)
 
 
 # =============================================================================
@@ -131,13 +94,12 @@ def init_tushare():
 
 def parse_date(date_str: str) -> datetime:
     """解析日期字符串"""
-    date_str = str(date_str).replace('-', '').strip()
-    return datetime.strptime(date_str, '%Y%m%d')
+    return _parse_date(date_str)
 
 
 def date_to_str(date: datetime, fmt: str = '%Y%m%d') -> str:
     """日期转字符串"""
-    return date.strftime(fmt)
+    return _date_to_str(date, fmt)
 
 
 def get_today_str() -> str:
@@ -262,7 +224,8 @@ def get_trade_dates(
         end_date=end_date,
         is_open='1'
     )
-    return trade_cal['cal_date'].tolist()
+    # 返回升序排列的日期（ oldest -> newest）
+    return sorted(trade_cal['cal_date'].tolist())
 
 
 def get_next_trade_date(pro, current_date: str) -> Optional[str]:
@@ -333,31 +296,20 @@ def download_daily_data(
         print("所有日期的数据已存在")
         return pd.DataFrame()
 
-    # 下载
+    # 逐日下载数据（Tushare daily接口需要用trade_date参数）
     all_data = []
-    for month, dates in _group_by_month(trade_dates):
-        month_start = dates[0]
-        month_end = dates[-1]
-
-        df = pro.daily(
-            start_date=month_start,
-            end_date=month_end,
-            fields=','.join(DAILY_FIELDS)
-        )
-
+    for trade_dt in trade_dates:
+        df = pro.daily(trade_date=trade_dt, fields=','.join(DAILY_FIELDS))
         if not df.empty:
-            # 按日期保存
-            for trade_dt in dates:
-                day_df = df[df['trade_date'] == trade_dt]
-                if not day_df.empty:
-                    _save_daily_file(day_df, output_dir, 'daily', trade_dt)
-
+            _save_daily_file(df, output_dir, 'daily', trade_dt)
             all_data.append(df)
-            print(f"  {month}: {len(df)} 条记录")
+            print(f"  {trade_dt}: {len(df)} 条")
+        else:
+            print(f"  {trade_dt}: 无数据")
 
     if all_data:
         result = pd.concat(all_data, ignore_index=True)
-        print(f"✓ 日线数据下载完成: {len(result)} 条")
+        print(f"\n✓ 日线数据下载完成: {len(result)} 条")
         return result
 
     return pd.DataFrame()
@@ -412,29 +364,20 @@ def download_daily_basic_data(
         print("所有日期的数据已存在")
         return pd.DataFrame()
 
+    # 逐日下载数据
     all_data = []
-    for month, dates in _group_by_month(trade_dates):
-        month_start = dates[0]
-        month_end = dates[-1]
-
-        df = pro.daily_basic(
-            start_date=month_start,
-            end_date=month_end,
-            fields=','.join(DAILY_BASIC_FIELDS)
-        )
-
+    for trade_dt in trade_dates:
+        df = pro.daily_basic(trade_date=trade_dt, fields=','.join(DAILY_BASIC_FIELDS))
         if not df.empty:
-            for trade_dt in dates:
-                day_df = df[df['trade_date'] == trade_dt]
-                if not day_df.empty:
-                    _save_daily_file(day_df, output_dir, 'daily_basic', trade_dt)
-
+            _save_daily_file(df, output_dir, 'daily_basic', trade_dt)
             all_data.append(df)
-            print(f"  {month}: {len(df)} 条记录")
+            print(f"  {trade_dt}: {len(df)} 条")
+        else:
+            print(f"  {trade_dt}: 无数据")
 
     if all_data:
         result = pd.concat(all_data, ignore_index=True)
-        print(f"✓ 基本面数据下载完成: {len(result)} 条")
+        print(f"\n✓ 基本面数据下载完成: {len(result)} 条")
         return result
 
     return pd.DataFrame()

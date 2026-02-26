@@ -1,12 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>相关性分析 - 高频因子分析平台</title>
-    {% extends "base.html" %}
-    {% block header_title %}相关性分析{% endblock %}
-    {% block extra_css %}
+{% extends "base.html" %}
+{% block title %}相关性分析 - 量化研究中台{% endblock %}
+{% block header_title %}相关性分析{% endblock %}
+{% block extra_css %}
     <style>
         .page-header {
             margin-bottom: 24px;
@@ -119,10 +114,8 @@
         .insight-value.positive { color: var(--accent-success); }
         .insight-value.negative { color: var(--accent-danger); }
     </style>
-    {% endblock %}
-</head>
-<body>
-    {% block content %}
+{% endblock %}
+{% block content %}
     <div class="page-header fade-in">
         <h1 class="page-title">因子相关性分析</h1>
         <p class="page-subtitle">分析各高频因子之间的截面相关性</p>
@@ -318,5 +311,3 @@
         document.addEventListener('DOMContentLoaded', loadCorrelationPage);
     </script>
     {% endblock %}
-</body>
-</html>

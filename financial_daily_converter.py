@@ -56,6 +56,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from mylib.date_utils import parse_date as _parse_date
+from mylib.date_utils import date_to_str as _date_to_str
 
 # =============================================================================
 # 配置
@@ -115,19 +117,8 @@ EXCLUDE_COLUMNS = ['ts_code', 'ann_date', 'f_ann_date', 'end_date', 'report_type
 # 辅助函数
 # =============================================================================
 
-def parse_date(date_str: Union[str, datetime]) -> datetime:
-    """解析日期字符串"""
-    if isinstance(date_str, datetime):
-        return date_str
-    date_str = str(date_str).replace('-', '').strip()
-    return datetime.strptime(date_str, '%Y%m%d')
-
-
-def date_to_str(date: Union[datetime, str], fmt: str = '%Y%m%d') -> str:
-    """日期转字符串"""
-    if isinstance(date, str):
-        return date.replace('-', '').strip()
-    return date.strftime(fmt)
+parse_date = _parse_date
+date_to_str = _date_to_str
 
 
 def get_date_list(start_date: str, end_date: str) -> List[str]:

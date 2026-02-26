@@ -1,12 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>因子分析 - 高频因子分析平台</title>
-    {% extends "base.html" %}
-    {% block header_title %}因子分析{% endblock %}
-    {% block extra_css %}
+{% extends "base.html" %}
+{% block title %}因子分析 - 量化研究中台{% endblock %}
+{% block header_title %}因子分析{% endblock %}
+{% block extra_css %}
     <style>
         .page-header {
             margin-bottom: 24px;
@@ -110,9 +105,7 @@
         }
     </style>
 {% endblock %}
-</head>
-<body>
-    {% block content %}
+{% block content %}
     <div class="page-header fade-in">
         <h1 class="page-title">因子统计分析</h1>
         <p class="page-subtitle">各因子数据分布与统计特征</p>
@@ -385,5 +378,3 @@
         document.addEventListener('DOMContentLoaded', loadFactorAnalysis);
     </script>
     {% endblock %}
-</body>
-</html>

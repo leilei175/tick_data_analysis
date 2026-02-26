@@ -1,12 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>分层分析 - 高频因子分析平台</title>
-    {% extends "base.html" %}
-    {% block header_title %}分层分析{% endblock %}
-    {% block extra_css %}
+{% extends "base.html" %}
+{% block title %}分层分析 - 量化研究中台{% endblock %}
+{% block header_title %}分层分析{% endblock %}
+{% block extra_css %}
     <style>
         .page-header {
             margin-bottom: 24px;
@@ -117,9 +112,7 @@
         .spread-value.negative { color: var(--accent-danger); }
     </style>
 {% endblock %}
-</head>
-<body>
-    {% block content %}
+{% block content %}
     <div class="page-header fade-in">
         <h1 class="page-title">分层分析</h1>
         <p class="page-subtitle">基于因子值分组的收益表现</p>
@@ -203,11 +196,7 @@
         }
 
         function renderFactorTabs() {
-            const container = document.getElementById('factorTabs');
-            container.innerHTML = allFactors.map(f => `
-                <button class="factor-btn ${f === currentFactor ? 'active' : ''}"
-                        onclick="selectFactor('${f}')">${f}</button>
-            `).join('');
+            renderFactorButtons('factorTabs', allFactors, currentFactor, 'selectFactor');
         }
 
         function selectFactor(factor) {
@@ -309,5 +298,3 @@
         document.addEventListener('DOMContentLoaded', loadFactors);
     </script>
     {% endblock %}
-</body>
-</html>

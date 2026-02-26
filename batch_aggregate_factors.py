@@ -7,25 +7,9 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from datetime import datetime
-import os
-import sys
 
-# 添加父目录到路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# 因子列表
-FACTORS = [
-    'bid_ask_spread',      # 买卖价差
-    'vwap_deviation',      # VWAP偏离度
-    'trade_imbalance',      # 交易失衡度
-    'order_imbalance',      # 订单失衡度
-    'depth_imbalance',      # 深度失衡度
-    'realized_volatility', # 已实现波动率
-    'effective_spread',     # 有效价差
-    'micro_price',          # 微价格
-    'price_momentum',       # 价格动量
-    'trade_flow_intensity'  # 交易流强度
-]
+# 从通用模块导入常量
+from mylib.constants import HIGH_FREQUENCY_FACTORS as FACTORS
 
 # 数据源和输出配置
 INPUT_DIR = "./factor/daily"

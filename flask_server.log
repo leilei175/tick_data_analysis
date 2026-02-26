@@ -1,0 +1,82 @@
+============================================================
+高频因子分析平台
+============================================================
+
+因子数据目录: /data1/code_git/tick_data_analysis/factor/by_factor
+启动服务器: http://localhost:9999
+API文档: http://localhost:9999/api/factors/list
+
+按 Ctrl+C 停止服务器
+============================================================
+ * Serving Flask app 'app'
+ * Debug mode: off
+2026-02-13 19:54:31,655 - werkzeug - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:9999
+ * Running on http://192.168.31.158:9999
+2026-02-13 19:54:31,655 - werkzeug - INFO - [33mPress CTRL+C to quit[0m
+2026-02-13 19:54:32,922 - werkzeug - INFO - 127.0.0.1 - - [13/Feb/2026 19:54:32] "GET /login HTTP/1.1" 200 -
+2026-02-13 19:55:47,747 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:47] "GET / HTTP/1.1" 200 -
+2026-02-13 19:55:48,225 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:48] "GET /dashboard HTTP/1.1" 200 -
+2026-02-13 19:55:48,277 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:48] "[36mGET /static/css/style.css HTTP/1.1[0m" 304 -
+2026-02-13 19:55:48,288 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:48] "[36mGET /static/js/app.js HTTP/1.1[0m" 304 -
+2026-02-13 19:55:51,259 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:51] "GET /api/factors/list HTTP/1.1" 200 -
+2026-02-13 19:55:52,039 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:52] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2026-02-13 19:55:58,754 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:58] "GET /data-manager HTTP/1.1" 200 -
+2026-02-13 19:55:58,794 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:58] "[36mGET /static/css/style.css HTTP/1.1[0m" 304 -
+2026-02-13 19:55:59,166 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:59] "[36mGET /static/js/app.js HTTP/1.1[0m" 304 -
+daily: 最新数据日期 = 20260210
+daily_basic: 最新数据日期 = 20260210
+cashflow_daily: 最新数据日期 = 20251231
+income_daily: 最新数据日期 = 20251231
+balance_daily: 最新数据日期 = 20251231
+2026-02-13 19:55:59,292 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:55:59] "GET /api/data/status HTTP/1.1" 200 -
+2026-02-13 19:56:19,131 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:19] "GET /factor-viewer HTTP/1.1" 200 -
+2026-02-13 19:56:19,174 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:19] "[36mGET /static/css/style.css HTTP/1.1[0m" 304 -
+2026-02-13 19:56:19,435 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:19] "[36mGET /static/js/app.js HTTP/1.1[0m" 304 -
+2026-02-13 19:56:19,472 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:19] "GET /api/factors/list HTTP/1.1" 200 -
+2026-02-13 19:56:28,115 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:28] "GET /api/factor/sample?factor=bid_ask_spread&year=2025 HTTP/1.1" 200 -
+2026-02-13 19:56:28,119 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:28] "GET /api/factor/stats?factor=bid_ask_spread&year=2025 HTTP/1.1" 200 -
+2026-02-13 19:56:28,156 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:28] "GET /api/factor/data?factor=bid_ask_spread&year=2025 HTTP/1.1" 200 -
+2026-02-13 19:56:28,202 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:28] "GET /api/factors/list HTTP/1.1" 200 -
+2026-02-13 19:56:28,244 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:28] "[33mGET /static/data/zz1000_bid_ask_spread_2025.parquet HTTP/1.1[0m" 404 -
+2026-02-13 19:56:28,272 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:28] "GET /api/factor/stats?factor=bid_ask_spread&year=2025 HTTP/1.1" 200 -
+2026-02-13 19:56:30,633 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:30] "GET /api/factor/sample?factor=bid_ask_spread&year=2025 HTTP/1.1" 200 -
+2026-02-13 19:56:30,636 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:30] "GET /api/factor/stats?factor=bid_ask_spread&year=2025 HTTP/1.1" 200 -
+2026-02-13 19:56:30,684 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:30] "GET /api/factor/data?factor=bid_ask_spread&year=2025 HTTP/1.1" 200 -
+2026-02-13 19:56:30,718 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:30] "GET /api/factors/list HTTP/1.1" 200 -
+2026-02-13 19:56:30,743 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:30] "[33mGET /static/data/zz1000_bid_ask_spread_2025.parquet HTTP/1.1[0m" 404 -
+2026-02-13 19:56:30,777 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:56:30] "GET /api/factor/stats?factor=bid_ask_spread&year=2025 HTTP/1.1" 200 -
+2026-02-13 19:59:43,086 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:59:43] "GET /data-manager HTTP/1.1" 200 -
+2026-02-13 19:59:43,202 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:59:43] "[36mGET /static/css/style.css HTTP/1.1[0m" 304 -
+2026-02-13 19:59:44,886 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:59:44] "[36mGET /static/js/app.js HTTP/1.1[0m" 304 -
+daily: 最新数据日期 = 20260210
+daily_basic: 最新数据日期 = 20260210
+cashflow_daily: 最新数据日期 = 20251231
+income_daily: 最新数据日期 = 20251231
+balance_daily: 最新数据日期 = 20251231
+2026-02-13 19:59:48,210 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:59:48] "GET /api/data/status HTTP/1.1" 200 -
+daily: 最新数据日期 = 20260210
+daily_basic: 最新数据日期 = 20260210
+cashflow_daily: 最新数据日期 = 20251231
+income_daily: 最新数据日期 = 20251231
+balance_daily: 最新数据日期 = 20251231
+
+============================================================
+下载日线数据: 20260211 ~ 20260210
+============================================================
+交易日数量: 0
+没有交易日
+
+============================================================
+下载基本面数据: 20260211 ~ 20260210
+============================================================
+交易日数量: 0
+没有交易日
+2026-02-13 19:59:53,277 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:59:53] "POST /api/data/update/sync HTTP/1.1" 200 -
+daily: 最新数据日期 = 20260210
+daily_basic: 最新数据日期 = 20260210
+cashflow_daily: 最新数据日期 = 20251231
+income_daily: 最新数据日期 = 20251231
+balance_daily: 最新数据日期 = 20251231
+2026-02-13 19:59:53,494 - werkzeug - INFO - 100.123.6.21 - - [13/Feb/2026 19:59:53] "GET /api/data/status HTTP/1.1" 200 -

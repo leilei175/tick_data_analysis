@@ -772,6 +772,280 @@ def merge_to_all(output_dir: str = None):
 
 
 # =============================================================================
+# VIP 下载函数（统一到本模块，供 financial_vip_downloader 兼容调用）
+# =============================================================================
+
+VIP_DEFAULT_START = '20150101'
+VIP_DEFAULT_END = '20251231'
+
+BALANCE_VIP_CORE_FIELDS = [
+    'ts_code', 'end_date', 'report_type',
+    'total_assets', 'total_liab', 'total_hldr_eqy_exc_min_int',
+    'total_cur_assets', 'total_nca', 'total_cur_liab', 'total_ncl',
+    'cash_reser_cb', 'trad_asset', 'notes_receiv', 'accounts_receiv',
+    'inventories', 'fix_assets', 'intan_assets',
+    'st_borr', 'lt_borr', 'notes_payable', 'bond_payable',
+    'accounts_payable', 'total_share', 'cap_rese', 'surplus_rese',
+    'undistr_porfit', 'minority_int'
+]
+
+INCOME_VIP_CORE_FIELDS = [
+    'ts_code', 'end_date', 'report_type',
+    'total_revenue', 'revenue', 'int_income', 'comm_income',
+    'oper_cost', 'operate_profit', 'total_profit', 'income_tax',
+    'n_income', 'n_income_attr_p', 'minority_gain',
+    'basic_eps', 'diluted_eps', 'ebit', 'ebitda',
+    'fin_exp', 'sell_exp', 'admin_exp', 'int_exp',
+    'invest_income', 'total_cogs'
+]
+
+CASHFLOW_VIP_CORE_FIELDS = [
+    'ts_code', 'end_date', 'report_type',
+    'n_cashflow_act', 'n_cashflow_inv_act', 'n_cash_flows_fnc_act',
+    'c_fr_sale_sg', 'c_paid_goods_s', 'c_paid_to_for_empl',
+    'finan_exp', 'c_recp_borrow', 'proc_issue_bonds',
+    'net_profit', 'depr_fa_coga_dpba', 'amort_intang_assets'
+]
+
+
+def _get_ts_code_list(pro) -> List[str]:
+    """获取所有上市股票代码。"""
+    try:
+        df = pro.stock_basic(exchange='', list_status='L', fields='ts_code')
+        return df['ts_code'].tolist()
+    except Exception as e:
+        print(f"获取股票列表失败: {e}")
+        return []
+
+
+def _batch_download_vip(
+    pro,
+    ts_codes: List[str],
+    start_date: str,
+    end_date: str,
+    interface: str,
+    fields: Optional[List[str]] = None,
+    batch_size: int = 100
+) -> pd.DataFrame:
+    """按股票分批调用 VIP 接口并合并结果。"""
+    all_data = []
+    total = len(ts_codes)
+    if total == 0:
+        return pd.DataFrame()
+
+    batches = [ts_codes[i:i + batch_size] for i in range(0, total, batch_size)]
+
+    for i, batch in enumerate(batches):
+        ts_code_str = ','.join(batch)
+        try:
+            api_method = getattr(pro, interface)
+            kwargs = {
+                'ts_code': ts_code_str,
+                'start_date': start_date,
+                'end_date': end_date,
+            }
+            if fields:
+                kwargs['fields'] = ','.join(fields)
+            df = api_method(**kwargs)
+            if not df.empty:
+                all_data.append(df)
+            processed = min((i + 1) * batch_size, total)
+            print(f"\r  进度: {processed}/{total} ({processed * 100 // total}%)", end='', flush=True)
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"\n  批次 {i + 1} 失败: {str(e)[:80]}")
+    print()
+    if all_data:
+        return pd.concat(all_data, ignore_index=True)
+    return pd.DataFrame()
+
+
+def _download_vip_table(
+    table_name: str,
+    interface: str,
+    core_fields: List[str],
+    start_date: str,
+    end_date: str,
+    output_dir: str = None,
+    fields: List[str] = None,
+    use_all_fields: bool = False,
+    skip_existing: bool = True
+) -> pd.DataFrame:
+    """VIP 表下载通用逻辑。"""
+    output_dir = output_dir or os.path.join(DEFAULT_DATA_DIR, table_name)
+    selected_fields = None if use_all_fields else (fields or core_fields)
+    fields_desc = "全部字段" if selected_fields is None else f"核心字段 ({len(selected_fields)}个)"
+
+    print(f"\n{'=' * 60}")
+    print(f"下载 {table_name} ({interface})")
+    print(f"时间范围: {start_date} ~ {end_date}")
+    print(f"字段模式: {fields_desc}")
+    print(f"{'=' * 60}")
+
+    pro = init_tushare()
+    ts_codes = _get_ts_code_list(pro)
+    print(f"股票数量: {len(ts_codes)}")
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    merged_file = output_path / f'{table_name}_all.parquet'
+    if skip_existing and merged_file.exists():
+        print(f"文件已存在: {merged_file}")
+        return pq.read_table(merged_file).to_pandas()
+
+    df = _batch_download_vip(
+        pro=pro,
+        ts_codes=ts_codes,
+        start_date=start_date,
+        end_date=end_date,
+        interface=interface,
+        fields=selected_fields,
+    )
+    if df.empty:
+        print("未下载到数据")
+        return pd.DataFrame()
+
+    table = pa.Table.from_pandas(df, preserve_index=False)
+    pq.write_table(table, str(merged_file))
+    print(f"✓ 下载完成: {len(df):,} 条记录 -> {merged_file}")
+    return df
+
+
+def download_balancesheet_vip(
+    start_date: str,
+    end_date: str,
+    output_dir: str = None,
+    fields: List[str] = None,
+    use_all_fields: bool = False,
+    skip_existing: bool = True
+) -> pd.DataFrame:
+    return _download_vip_table(
+        table_name='balance',
+        interface='balancesheet_vip',
+        core_fields=BALANCE_VIP_CORE_FIELDS,
+        start_date=start_date,
+        end_date=end_date,
+        output_dir=output_dir,
+        fields=fields,
+        use_all_fields=use_all_fields,
+        skip_existing=skip_existing,
+    )
+
+
+def download_income_vip(
+    start_date: str,
+    end_date: str,
+    output_dir: str = None,
+    fields: List[str] = None,
+    use_all_fields: bool = False,
+    skip_existing: bool = True
+) -> pd.DataFrame:
+    return _download_vip_table(
+        table_name='income',
+        interface='income_vip',
+        core_fields=INCOME_VIP_CORE_FIELDS,
+        start_date=start_date,
+        end_date=end_date,
+        output_dir=output_dir,
+        fields=fields,
+        use_all_fields=use_all_fields,
+        skip_existing=skip_existing,
+    )
+
+
+def download_cashflow_vip(
+    start_date: str,
+    end_date: str,
+    output_dir: str = None,
+    fields: List[str] = None,
+    use_all_fields: bool = False,
+    skip_existing: bool = True
+) -> pd.DataFrame:
+    return _download_vip_table(
+        table_name='cashflow',
+        interface='cashflow_vip',
+        core_fields=CASHFLOW_VIP_CORE_FIELDS,
+        start_date=start_date,
+        end_date=end_date,
+        output_dir=output_dir,
+        fields=fields,
+        use_all_fields=use_all_fields,
+        skip_existing=skip_existing,
+    )
+
+
+def download_all_vip(
+    start_date: str = VIP_DEFAULT_START,
+    end_date: str = VIP_DEFAULT_END,
+    output_dir: str = DEFAULT_DATA_DIR,
+    balance: bool = True,
+    income: bool = True,
+    cashflow: bool = True,
+    use_all_fields: bool = False
+):
+    """下载全部 VIP 财务报表。"""
+    print("=" * 60)
+    print("批量下载 Tushare VIP 财务报表")
+    print(f"时间范围: {start_date} ~ {end_date}")
+    print("=" * 60)
+
+    if balance:
+        download_balancesheet_vip(
+            start_date, end_date, os.path.join(output_dir, 'balance'), use_all_fields=use_all_fields
+        )
+    if income:
+        download_income_vip(
+            start_date, end_date, os.path.join(output_dir, 'income'), use_all_fields=use_all_fields
+        )
+    if cashflow:
+        download_cashflow_vip(
+            start_date, end_date, os.path.join(output_dir, 'cashflow'), use_all_fields=use_all_fields
+        )
+
+    print("\n" + "=" * 60)
+    print("全部下载完成!")
+    print("=" * 60)
+
+
+def split_to_quarters(
+    data_dir: str = DEFAULT_DATA_DIR,
+    balance: bool = True,
+    income: bool = True,
+    cashflow: bool = True
+):
+    """将 *_all.parquet 按季度拆分保存。"""
+    print("\n拆分季度数据...")
+    for table_name in ['balance', 'income', 'cashflow']:
+        if table_name == 'balance' and not balance:
+            continue
+        if table_name == 'income' and not income:
+            continue
+        if table_name == 'cashflow' and not cashflow:
+            continue
+
+        table_dir = Path(data_dir) / table_name
+        all_file = table_dir / f'{table_name}_all.parquet'
+        if not all_file.exists():
+            print(f"{table_name}: 文件不存在 {all_file}")
+            continue
+
+        df = pq.read_table(all_file).to_pandas()
+        if 'end_date' not in df.columns:
+            print(f"{table_name}: 缺少 end_date 字段，跳过")
+            continue
+
+        quarter_count = 0
+        for quarter_end in sorted(df['end_date'].dropna().astype(str).unique()):
+            quarter_df = df[df['end_date'].astype(str) == quarter_end]
+            if quarter_df.empty:
+                continue
+            file_path = table_dir / f'{table_name}_{quarter_end}.parquet'
+            pq.write_table(pa.Table.from_pandas(quarter_df, preserve_index=False), str(file_path))
+            quarter_count += 1
+        print(f"{table_name}: 已拆分 {quarter_count} 个季度")
+
+
+# =============================================================================
 # 命令行接口
 # =============================================================================
 

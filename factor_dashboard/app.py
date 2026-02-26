@@ -6,20 +6,17 @@
 
 import os
 import sys
-import json
+import html
+import hashlib
+import re
 from pathlib import Path
 from datetime import datetime
-from functools import wraps
 from typing import Optional, List, Dict
 
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import plotly.io as pio
 
-from flask import Flask, render_template, jsonify, request, redirect, url_for
+from flask import Flask, render_template, jsonify, request, redirect, url_for, session
 
 # 添加父目录到路径（确保正确导入 update_data）
 _parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,7 +36,10 @@ get_today_str = _update_data_module.get_today_str
 parse_date = _update_data_module.parse_date
 date_to_str = _update_data_module.date_to_str
 
-from datetime import datetime, timedelta
+try:
+    import markdown as _markdown_lib
+except Exception:
+    _markdown_lib = None
 
 # ==================== 配置 ====================
 class Config:
@@ -50,6 +50,27 @@ class Config:
 # ==================== Flask应用 ====================
 app = Flask(__name__)
 app.config.from_object(Config)
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DOC_DIR = BASE_DIR / "doc"
+REPORT_DOC_DIRS = [
+    BASE_DIR / "factor_analysis_results" / "reports",
+    BASE_DIR / "factor_analysis_results" / "financial_reports",
+]
+
+factor_analyzer = None
+analysis_engine = None
+
+# ==================== 登录装饰器 ====================
+def login_required(f):
+    """验证用户是否登录"""
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 # 缓存因子数据
 _factor_data_cache = {}
@@ -157,12 +178,158 @@ def load_returns(period: int = 1) -> Optional[pd.DataFrame]:
             return None
     return _returns_cache[period]
 
+
+def _safe_doc_title(path: Path) -> str:
+    return path.stem.replace("_", " ").replace("-", " ")
+
+
+def _infer_doc_tags(path: Path, title: str, content: str) -> List[str]:
+    tags = set()
+    rel = path.relative_to(BASE_DIR).as_posix()
+    lower_title = title.lower()
+    lower_content = content.lower()
+
+    if rel.startswith("doc/"):
+        tags.add("指南")
+    if rel.startswith("factor_analysis_results/reports"):
+        tags.add("因子报告")
+    if rel.startswith("factor_analysis_results/financial_reports"):
+        tags.add("财务报告")
+    if "update" in lower_title or "update" in rel:
+        tags.add("数据更新")
+    if "download" in lower_title or "downloader" in rel:
+        tags.add("数据下载")
+    if "factor" in lower_title or "因子" in title:
+        tags.add("因子")
+    if "converter" in rel or "转换" in title:
+        tags.add("数据转换")
+    if "analysis" in lower_title or "分析" in title:
+        tags.add("分析")
+    if "tushare" in lower_content:
+        tags.add("Tushare")
+
+    if not tags:
+        tags.add("其他")
+    return sorted(tags)
+
+
+def _highlight_text(text: str, query: str) -> str:
+    escaped = html.escape(text)
+    if not query:
+        return escaped
+    pattern = re.compile(re.escape(html.escape(query)), flags=re.IGNORECASE)
+    return pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", escaped)
+
+
+def _collect_doc_files() -> List[Path]:
+    doc_files: List[Path] = []
+    if DOC_DIR.exists():
+        doc_files.extend(sorted(DOC_DIR.glob("*.md")))
+    for report_dir in REPORT_DOC_DIRS:
+        if report_dir.exists():
+            doc_files.extend(sorted(report_dir.glob("*.md")))
+    return doc_files
+
+
+def _build_doc_index() -> List[Dict[str, str]]:
+    docs: List[Dict[str, str]] = []
+    for path in _collect_doc_files():
+        rel_path = path.relative_to(BASE_DIR).as_posix()
+        doc_id = hashlib.md5(rel_path.encode("utf-8")).hexdigest()[:16]
+        stat = path.stat()
+        created_ts = float(getattr(stat, "st_ctime", stat.st_mtime))
+        updated_ts = float(stat.st_mtime)
+        try:
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            raw = ""
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        title = _safe_doc_title(path)
+        for line in lines[:8]:
+            if line.startswith("#"):
+                title = line.lstrip("#").strip()
+                break
+        snippet = " ".join(lines[:6])[:220]
+        docs.append({
+            "id": doc_id,
+            "title": title,
+            "path": rel_path,
+            "snippet": snippet,
+            "content": raw,
+            "tags": _infer_doc_tags(path, title, raw),
+            "created_at_ts": created_ts,
+            "updated_at_ts": updated_ts,
+            "created_at": datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": datetime.fromtimestamp(updated_ts).strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    docs.sort(key=lambda x: x["path"])
+    return docs
+
+
+def _render_markdown(raw_text: str) -> str:
+    if _markdown_lib is not None:
+        return _markdown_lib.markdown(
+            raw_text,
+            extensions=["fenced_code", "tables", "toc", "nl2br"],
+        )
+    escaped = html.escape(raw_text)
+    return f"<pre>{escaped}</pre>"
+
+
+def _load_factor_returns_merged(factor: str, period: int, year: int = None) -> tuple:
+    """加载并合并因子与收益率数据，返回 (merged_df, error_message)。"""
+    factor_df = load_factor_data(factor, year)
+    if factor_df is None or factor_df.empty:
+        return None, f'因子文件不存在或为空: {factor}'
+
+    returns_df = load_returns(period)
+    if returns_df is None or returns_df.empty:
+        return None, '收益率数据为空'
+
+    factor_long = factor_df.stack().reset_index()
+    factor_long.columns = ['date', 'stock_code', 'factor_value']
+    factor_long['date'] = pd.to_datetime(factor_long['date']).dt.strftime('%Y-%m-%d')
+
+    returns_df = returns_df.copy()
+    returns_df['date'] = pd.to_datetime(returns_df['date']).dt.strftime('%Y-%m-%d')
+    returns_col = f'return_{period}d'
+    if 'return_1d' in returns_df.columns:
+        returns_df = returns_df.rename(columns={'return_1d': returns_col})
+    if returns_col not in returns_df.columns:
+        return None, f'收益率字段缺失: {returns_col}'
+
+    returns_long = returns_df[['date', 'stock_code', returns_col]].copy()
+    merged = factor_long.merge(returns_long, on=['date', 'stock_code']).dropna()
+    if merged.empty:
+        return None, '没有可用的重叠数据'
+    return merged, None
+
+
+def _calc_quantile_result(merged: pd.DataFrame, period: int, quantiles: int) -> list:
+    returns_col = f'return_{period}d'
+    merged = merged.copy()
+    merged['quantile'] = merged.groupby('date')['factor_value'].transform(
+        lambda x: pd.qcut(x, quantiles, labels=False, duplicates='drop') + 1
+    )
+    result = []
+    for q in range(1, quantiles + 1):
+        q_data = merged[merged['quantile'] == q]
+        result.append({
+            'quantile': q,
+            'factor_mean': float(q_data['factor_value'].mean()),
+            'return_mean': float(q_data[returns_col].mean()),
+            'return_std': float(q_data[returns_col].std()),
+            'count': int(len(q_data)),
+            'ic': float(q_data['factor_value'].corr(q_data[returns_col])),
+        })
+    return result
+
 # ==================== 路由 ====================
 
 @app.route('/')
 def index():
     """主页"""
-    return render_template('index.html', active_page='dashboard')
+    return redirect(url_for('dashboard'))
 
 @app.route('/dashboard')
 def dashboard():
@@ -193,6 +360,12 @@ def long_short():
 def data_manager():
     """数据管理页面"""
     return render_template('data_manager.html', active_page='data-manager')
+
+
+@app.route('/docs')
+def docs_center():
+    """文档中心页面"""
+    return render_template('docs_center.html', active_page='docs')
 
 # ==================== 新版 API（按因子宽格式数据） ====================
 
@@ -416,6 +589,194 @@ def api_factor_stats():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
+
+@app.route('/api/factor-quick')
+def api_factor_quick():
+    """兼容旧版页面: 快速因子文件信息"""
+    try:
+        factor_dir = get_by_factor_dir()
+        if not factor_dir.exists():
+            return jsonify({'status': 'error', 'message': f'目录不存在: {factor_dir}'})
+
+        files = sorted(factor_dir.glob("*.parquet"))
+        file_items = []
+        large_files = []
+
+        for f in files:
+            size_mb = f.stat().st_size / (1024 * 1024)
+            is_large = size_mb > 80
+            file_info = {
+                "filename": f.name,
+                "file_size_mb": round(size_mb, 2),
+                "is_large": is_large,
+            }
+            file_items.append(file_info)
+            if is_large:
+                large_files.append({
+                    "filename": f.name,
+                    "size_mb": round(size_mb, 2),
+                    "reason": "文件较大，详情加载会做延迟处理",
+                })
+
+        return jsonify({
+            "status": "success",
+            "data": {
+                "data_source": str(factor_dir),
+                "total_files": len(file_items),
+                "zz1000_files": len([x for x in file_items if x["filename"].startswith("zz1000_")]),
+                "daily_files": len([x for x in file_items if x["filename"].startswith("daily_")]),
+                "files": file_items,
+                "large_files": large_files,
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/factor-file-info/<path:filename>')
+def api_factor_file_info(filename):
+    """兼容旧版页面: 文件详情"""
+    try:
+        factor_dir = get_by_factor_dir().resolve()
+        file_path = (factor_dir / filename).resolve()
+        if factor_dir not in file_path.parents or not file_path.exists():
+            return jsonify({'status': 'error', 'message': '文件不存在或路径非法'})
+        if file_path.suffix != ".parquet":
+            return jsonify({'status': 'error', 'message': '仅支持 parquet 文件'})
+
+        df = pd.read_parquet(file_path)
+        date_values = pd.to_datetime(df.index, errors="coerce")
+        date_values = date_values[~pd.isna(date_values)]
+        date_start = str(date_values.min().date()) if len(date_values) > 0 else None
+        date_end = str(date_values.max().date()) if len(date_values) > 0 else None
+
+        return jsonify({
+            "status": "success",
+            "data": {
+                "filename": file_path.name,
+                "file_path": str(file_path),
+                "file_size_mb": round(file_path.stat().st_size / (1024 * 1024), 2),
+                "record_count": int(len(df)),
+                "stock_count": int(len(df.columns)),
+                "date_range": {"start": date_start, "end": date_end},
+                "columns": [str(c) for c in df.columns.tolist()],
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/factor-sample')
+def api_factor_sample_legacy():
+    """兼容旧版页面: 因子样例"""
+    try:
+        files = sorted(get_by_factor_dir().glob("*.parquet"))
+        if not files:
+            return jsonify({'status': 'error', 'message': '未找到任何因子文件'})
+        sample_file = files[0]
+        df = pd.read_parquet(sample_file).head(10)
+
+        table_df = df.reset_index().rename(columns={df.index.name or "index": "date"})
+        columns = [str(c) for c in table_df.columns.tolist()]
+        sample_data = table_df.where(pd.notnull(table_df), None).to_dict(orient="records")
+
+        return jsonify({
+            "status": "success",
+            "data": {
+                "filename": sample_file.name,
+                "total_rows": int(len(df)),
+                "columns": columns,
+                "sample_data": sample_data,
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/docs/index')
+def api_docs_index():
+    """文档索引与搜索"""
+    try:
+        query_raw = (request.args.get("q") or "").strip()
+        query = query_raw.lower()
+        selected_tag = (request.args.get("tag") or "").strip()
+        sort_by = (request.args.get("sort_by") or "created_at").strip()
+        order = (request.args.get("order") or "desc").strip().lower()
+        docs = _build_doc_index()
+        tag_counts = {}
+        for d in docs:
+            for tag in d["tags"]:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+        if selected_tag:
+            docs = [d for d in docs if selected_tag in d["tags"]]
+        if query:
+            docs = [
+                d for d in docs
+                if query in d["title"].lower() or query in d["path"].lower() or query in d["content"].lower()
+            ]
+
+        reverse = order != "asc"
+        if sort_by == "updated_at":
+            docs.sort(key=lambda x: x.get("updated_at_ts", 0), reverse=reverse)
+        elif sort_by == "title":
+            docs.sort(key=lambda x: x.get("title", "").lower(), reverse=reverse)
+        else:
+            docs.sort(key=lambda x: x.get("created_at_ts", 0), reverse=reverse)
+
+        data = []
+        for d in docs:
+            snippet = d["snippet"]
+            title = d["title"]
+            if query:
+                snippet = _highlight_text(snippet, query_raw)
+                title = _highlight_text(title, query_raw)
+            data.append({
+                "id": d["id"],
+                "title": title,
+                "path": d["path"],
+                "snippet": snippet,
+                "tags": d["tags"],
+                "created_at": d["created_at"],
+                "updated_at": d["updated_at"],
+            })
+        return jsonify({
+            "status": "success",
+            "data": {
+                "total": len(data),
+                "docs": data,
+                "tags": sorted([{"name": k, "count": v} for k, v in tag_counts.items()], key=lambda x: (-x["count"], x["name"])),
+                "sort_by": sort_by,
+                "order": order,
+            },
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route('/api/docs/content/<doc_id>')
+def api_docs_content(doc_id):
+    """文档详情"""
+    try:
+        docs = _build_doc_index()
+        matched = next((d for d in docs if d["id"] == doc_id), None)
+        if matched is None:
+            return jsonify({"status": "error", "message": "文档不存在"})
+        return jsonify({
+            "status": "success",
+            "data": {
+                "id": matched["id"],
+                "title": matched["title"],
+                "path": matched["path"],
+                "html": _render_markdown(matched["content"]),
+                "raw": matched["content"],
+                "created_at": matched["created_at"],
+                "updated_at": matched["updated_at"],
+            },
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
 @app.route('/api/factor/ic')
 def api_factor_ic():
     """API: 计算因子IC"""
@@ -424,38 +785,14 @@ def api_factor_ic():
         year = request.args.get('year', type=int)
         period = request.args.get('period', default=1, type=int)
 
-        # 加载因子数据 - 宽格式
-        factor_df = load_factor_data(factor, year)
-        if factor_df is None or factor_df.empty:
-            return jsonify({'status': 'error', 'message': f'因子文件不存在: {factor}'})
-        if factor_df.empty:
-            return jsonify({'status': 'error', 'message': '因子数据为空'})
-
-        # 加载收益率数据
-        returns_df = load_returns(period)
-        if returns_df is None or returns_df.empty:
-            return jsonify({'status': 'error', 'message': '收益率数据未找到'})
-
-        # 宽格式转长格式
-        factor_long = factor_df.stack().reset_index()
-        factor_long.columns = ['date', 'stock_code', 'factor_value']
-        # 转换日期为统一的字符串格式 YYYY-MM-DD
-        factor_long['date'] = pd.to_datetime(factor_long['date']).dt.strftime('%Y-%m-%d')
-
-        # 标准化收益率日期格式
-        returns_df['date'] = pd.to_datetime(returns_df['date']).dt.strftime('%Y-%m-%d')
-
-        returns_df = returns_df.rename(columns={'return_1d': f'return_{period}d'})
-        returns_long = returns_df[['date', 'stock_code', f'return_{period}d']].copy()
-
-        merged = factor_long.merge(returns_long, on=['date', 'stock_code']).dropna()
-
-        if len(merged) == 0:
-            return jsonify({'status': 'error', 'message': '没有可用的重叠数据'})
+        merged, err = _load_factor_returns_merged(factor=factor, period=period, year=year)
+        if err:
+            return jsonify({'status': 'error', 'message': err})
 
         # 计算IC
+        returns_col = f'return_{period}d'
         ic_series = merged.groupby('date').apply(
-            lambda x: x['factor_value'].corr(x[f'return_{period}d'])
+            lambda x: x['factor_value'].corr(x[returns_col])
         )
 
         ic_mean = float(ic_series.mean())
@@ -508,7 +845,7 @@ def api_factor_cross_correlation():
             return jsonify({'status': 'error', 'message': '无法加载足够的因子数据'})
 
         # 合并数据并计算相关性
-        common_dates = set.intersection(*[set(df.index) for df in dfs.values()])
+        common_dates = sorted(set.intersection(*[set(df.index) for df in dfs.values()]))
 
         corr_data = {}
         for f1 in factors:
@@ -519,8 +856,10 @@ def api_factor_cross_correlation():
                 if f2 not in dfs:
                     continue
                 # 计算截面相关性
-                common_df = pd.DataFrame({f1: dfs[f1].loc[common_dates].mean(axis=1),
-                                         f2: dfs[f2].loc[common_dates].mean(axis=1)}).dropna()
+                common_df = pd.DataFrame({
+                    f1: dfs[f1].loc[common_dates].mean(axis=1),
+                    f2: dfs[f2].loc[common_dates].mean(axis=1),
+                }).dropna()
                 if len(common_df) > 10:
                     corr_data[f1][f2] = round(common_df[f1].corr(common_df[f2]), 4)
                 else:
@@ -548,54 +887,10 @@ def api_quantile():
         if not factor:
             return jsonify({'status': 'error', 'message': '缺少因子参数'})
 
-        # 加载因子数据 - 宽格式: index=date, columns=stock_code
-        factor_df = load_factor_data(factor)
-        if factor_df is None or factor_df.empty:
-            return jsonify({'status': 'error', 'message': f'因子文件不存在: {factor}'})
-        if factor_df.empty:
-            return jsonify({'status': 'error', 'message': '因子数据为空'})
-
-        # 加载收益率数据
-        returns_df = load_returns(period)
-        if returns_df is None or returns_df.empty:
-            return jsonify({'status': 'error', 'message': '收益率数据为空'})
-
-        # 合并数据 - 宽格式转长格式
-        factor_long = factor_df.stack().reset_index()
-        factor_long.columns = ['date', 'stock_code', 'factor_value']
-        # 转换日期为统一的字符串格式 YYYY-MM-DD
-        factor_long['date'] = pd.to_datetime(factor_long['date']).dt.strftime('%Y-%m-%d')
-
-        # 标准化收益率日期格式
-        returns_df['date'] = pd.to_datetime(returns_df['date']).dt.strftime('%Y-%m-%d')
-
-        returns_df = returns_df.rename(columns={'return_1d': f'return_{period}d'})
-        returns_long = returns_df[['date', 'stock_code', f'return_{period}d']].copy()
-
-        merged = factor_long.merge(returns_long, on=['date', 'stock_code']).dropna()
-
-        if len(merged) == 0:
-            return jsonify({'status': 'error', 'message': '没有可用的重叠数据'})
-
-        # 计算每日因子分位数
-        merged['quantile'] = merged.groupby('date')['factor_value'].transform(
-            lambda x: pd.qcut(x, quantiles, labels=False, duplicates='drop') + 1
-        )
-
-        # 按分位数统计
-        result = []
-        for q in range(1, quantiles + 1):
-            q_data = merged[merged['quantile'] == q]
-            result.append({
-                'quantile': q,
-                'factor_mean': float(q_data['factor_value'].mean()),
-                'return_mean': float(q_data[f'return_{period}d'].mean()),
-                'return_std': float(q_data[f'return_{period}d'].std()),
-                'count': int(len(q_data)),
-                'ic': float(q_data['factor_value'].corr(q_data[f'return_{period}d']))
-            })
-
-        return jsonify({'status': 'success', 'data': result})
+        merged, err = _load_factor_returns_merged(factor=factor, period=period)
+        if err:
+            return jsonify({'status': 'error', 'message': err})
+        return jsonify({'status': 'success', 'data': _calc_quantile_result(merged, period, quantiles)})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
@@ -609,43 +904,19 @@ def api_long_short():
         if not factor:
             return jsonify({'status': 'error', 'message': '缺少因子参数'})
 
-        # 加载因子数据 - 宽格式
-        factor_df = load_factor_data(factor)
-        if factor_df is None or factor_df.empty:
-            return jsonify({'status': 'error', 'message': f'因子文件不存在: {factor}'})
-        if factor_df.empty:
-            return jsonify({'status': 'error', 'message': '因子数据为空'})
-
-        # 加载收益率数据
-        returns_df = load_returns(period)
-        if returns_df is None or returns_df.empty:
-            return jsonify({'status': 'error', 'message': '收益率数据为空'})
-
-        # 宽格式转长格式
-        factor_long = factor_df.stack().reset_index()
-        factor_long.columns = ['date', 'stock_code', 'factor_value']
-        # 转换日期为统一的字符串格式 YYYY-MM-DD
-        factor_long['date'] = pd.to_datetime(factor_long['date']).dt.strftime('%Y-%m-%d')
-
-        # 标准化收益率日期格式
-        returns_df['date'] = pd.to_datetime(returns_df['date']).dt.strftime('%Y-%m-%d')
-
-        returns_df = returns_df.rename(columns={'return_1d': f'return_{period}d'})
-        returns_long = returns_df[['date', 'stock_code', f'return_{period}d']].copy()
-
-        merged = factor_long.merge(returns_long, on=['date', 'stock_code']).dropna()
-
-        if len(merged) == 0:
-            return jsonify({'status': 'error', 'message': '没有可用的重叠数据'})
+        merged, err = _load_factor_returns_merged(factor=factor, period=period)
+        if err:
+            return jsonify({'status': 'error', 'message': err})
 
         # 计算每日因子分位数
+        returns_col = f'return_{period}d'
         merged['quantile'] = merged.groupby('date')['factor_value'].transform(
             lambda x: pd.qcut(x, 5, labels=False, duplicates='drop') + 1
         )
 
         # 计算多空收益
-        top_returns = merged[merged['quantile'] == 5].groupby('date')[f'return_{period}d'].mean()
-        bottom_returns = merged[merged['quantile'] == 1].groupby('date')[f'return_{period}d'].mean()
+        top_returns = merged[merged['quantile'] == 5].groupby('date')[returns_col].mean()
+        bottom_returns = merged[merged['quantile'] == 1].groupby('date')[returns_col].mean()
         ls_returns = top_returns - bottom_returns
 
         # 统计指标
@@ -702,7 +973,6 @@ def api_summary():
             return jsonify({'status': 'success', 'data': summary})
 
         # 回退到原有方式
-        analyzer = None
         global factor_analyzer
         if factor_analyzer is None:
             base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -712,6 +982,7 @@ def api_summary():
                 factor_analyzer.compute_returns(periods=[1, 5, 10])
             except:
                 pass
+        analyzer = factor_analyzer
 
         if analyzer and analyzer.factors_df is not None:
             summary = {
@@ -797,54 +1068,10 @@ def api_quantile_by_factor(factor):
         period = request.args.get('period', default=1, type=int)
         quantiles = request.args.get('quantiles', default=5, type=int)
 
-        # 加载因子数据 - 宽格式
-        factor_df = load_factor_data(factor)
-        if factor_df is None or factor_df.empty:
-            return jsonify({'status': 'error', 'message': f'因子文件不存在: {factor}'})
-        if factor_df.empty:
-            return jsonify({'status': 'error', 'message': '因子数据为空'})
-
-        # 加载收益率数据
-        returns_df = load_returns(period)
-        if returns_df is None or returns_df.empty:
-            return jsonify({'status': 'error', 'message': '收益率数据为空'})
-
-        # 宽格式转长格式
-        factor_long = factor_df.stack().reset_index()
-        factor_long.columns = ['date', 'stock_code', 'factor_value']
-        # 转换日期为统一的字符串格式 YYYY-MM-DD
-        factor_long['date'] = pd.to_datetime(factor_long['date']).dt.strftime('%Y-%m-%d')
-
-        # 标准化收益率日期格式
-        returns_df['date'] = pd.to_datetime(returns_df['date']).dt.strftime('%Y-%m-%d')
-
-        returns_df = returns_df.rename(columns={'return_1d': f'return_{period}d'})
-        returns_long = returns_df[['date', 'stock_code', f'return_{period}d']].copy()
-
-        merged = factor_long.merge(returns_long, on=['date', 'stock_code']).dropna()
-
-        if len(merged) == 0:
-            return jsonify({'status': 'error', 'message': '没有可用的重叠数据'})
-
-        # 计算每日因子分位数
-        merged['quantile'] = merged.groupby('date')['factor_value'].transform(
-            lambda x: pd.qcut(x, quantiles, labels=False, duplicates='drop') + 1
-        )
-
-        # 按分位数统计
-        result = []
-        for q in range(1, quantiles + 1):
-            q_data = merged[merged['quantile'] == q]
-            result.append({
-                'quantile': q,
-                'factor_mean': float(q_data['factor_value'].mean()),
-                'return_mean': float(q_data[f'return_{period}d'].mean()),
-                'return_std': float(q_data[f'return_{period}d'].std()),
-                'count': int(len(q_data)),
-                'ic': float(q_data['factor_value'].corr(q_data[f'return_{period}d']))
-            })
-
-        return jsonify({'status': 'success', 'data': result})
+        merged, err = _load_factor_returns_merged(factor=factor, period=period)
+        if err:
+            return jsonify({'status': 'error', 'message': err})
+        return jsonify({'status': 'success', 'data': _calc_quantile_result(merged, period, quantiles)})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
@@ -1073,6 +1300,278 @@ def api_data_refresh():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
+# ==================== 登录路由 ====================
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """登录页面"""
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+
+        # 简单的认证（实际应用中应使用数据库存储）
+        # 默认账号: admin/admin 或 user/user
+        valid_users = {
+            'admin': 'admin',
+            'user': 'user'
+        }
+
+        if username in valid_users and valid_users[username] == password:
+            session['user_id'] = username
+            session['username'] = username
+            return redirect(url_for('dashboard'))
+        else:
+            return render_template('login.html', error='用户名或密码错误')
+
+    return render_template('login.html')
+
+
+@app.route('/logout')
+def logout():
+    """退出登录"""
+    session.clear()
+    return redirect(url_for('login'))
+
+
+# ==================== 因子实验室路由 ====================
+
+@app.route('/factor-lab')
+def factor_lab():
+    """因子分析实验室页面"""
+    return render_template('factor_lab.html', active_page='factor-lab')
+
+
+# ==================== 因子实验室 API ====================
+
+@app.route('/api/factor/factories', methods=['POST'])
+def api_factor_factories():
+    """API: 获取可用因子列表"""
+    try:
+        data = request.get_json() or {}
+        source = data.get('source')
+
+        from mylib.factor_factory import get_factory
+
+        factory = get_factory()
+
+        if source:
+            factors = factory.list_factors(source)
+            return jsonify({
+                'status': 'success',
+                'data': {
+                    'source': source,
+                    'factors': factors
+                }
+            })
+
+        # 返回所有因子来源
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'sources': factory.list_sources(),
+                'factors': factory.list_factors(),
+                'stock_pools': factory.list_stock_pools()
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/factor/preview', methods=['POST'])
+def api_factor_preview():
+    """API: 预览预处理效果"""
+    try:
+        data = request.get_json()
+        factor_name = data.get('factor')
+        source = data.get('source', 'high_frequency')
+        method = data.get('method')
+        params = data.get('params', {})
+        start_date = data.get('start')
+        end_date = data.get('end')
+
+        if not factor_name or not method:
+            return jsonify({'status': 'error', 'message': '缺少因子名称或预处理方法'})
+
+        from mylib.factor_factory import get_factory
+        from mylib.factor_preprocessor import get_preprocessor
+
+        factory = get_factory()
+        preprocessor = get_preprocessor()
+
+        # 加载因子数据（样本）
+        factor_df = factory.get_factor(
+            factor_name=factor_name,
+            source=source,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+        # 取样本数据
+        sample_df = factor_df.head(20)
+
+        # 预览预处理效果
+        preview_result = preprocessor.preview(sample_df, method, **params)
+
+        return jsonify({
+            'status': 'success',
+            'data': preview_result
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/factor/analyze', methods=['POST'])
+def api_factor_analyze():
+    """API: 执行因子分析"""
+    try:
+        data = request.get_json()
+
+        factor = data.get('factor')
+        source = data.get('source', 'high_frequency')
+        stock_pool = data.get('stock_pool', 'zz1000')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+
+        preprocess = data.get('preprocess') or {}
+        preprocess_method = preprocess.get('method')
+        preprocess_params = preprocess.get('params', {})
+
+        config_params = data.get('config', {})
+        returns_type = config_params.get('returns_type', 'close2close_next')
+        returns_n = config_params.get('returns_n', 5)
+        quantiles = config_params.get('quantiles', 5)
+
+        if not factor:
+            return jsonify({'status': 'error', 'message': '缺少因子参数'})
+
+        from mylib.analysis_engine import AnalysisEngine, AnalysisConfig
+
+        engine = get_analysis_engine()
+
+        # 创建分析配置
+        config = AnalysisConfig(
+            factor_name=factor,
+            source=source,
+            stock_pool=stock_pool,
+            start_date=start_date,
+            end_date=end_date,
+            preprocess_method=preprocess_method,
+            preprocess_params=preprocess_params,
+            returns_method=returns_type,
+            returns_n=returns_n,
+            quantiles=quantiles
+        )
+
+        # 执行分析
+        result = engine.run_analysis(config)
+
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'ic_stats': result.ic_stats,
+                'quantile_returns': result.quantile_returns,
+                'long_short_stats': result.long_short_stats,
+                'turnover_rate': result.turnover_rate,
+                'charts': result.charts_data
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/factor/save-result', methods=['POST'])
+def api_factor_save_result():
+    """API: 保存分析结果"""
+    try:
+        from mylib.analysis_engine import AnalysisEngine, AnalysisConfig
+
+        data = request.get_json()
+
+        factor = data.get('factor')
+        source = data.get('source', 'high_frequency')
+        stock_pool = data.get('stock_pool', 'zz1000')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+
+        preprocess = data.get('preprocess') or {}
+        preprocess_method = preprocess.get('method')
+        preprocess_params = preprocess.get('params', {})
+
+        config_params = data.get('config', {})
+        returns_type = config_params.get('returns_type', 'close2close_next')
+        returns_n = config_params.get('returns_n', 5)
+        quantiles = config_params.get('quantiles', 5)
+
+        engine = get_analysis_engine()
+
+        config = AnalysisConfig(
+            factor_name=factor,
+            source=source,
+            stock_pool=stock_pool,
+            start_date=start_date,
+            end_date=end_date,
+            preprocess_method=preprocess_method,
+            preprocess_params=preprocess_params,
+            returns_method=returns_type,
+            returns_n=returns_n,
+            quantiles=quantiles
+        )
+
+        # 执行分析
+        result = engine.run_analysis(config)
+
+        # 保存结果
+        save_path = engine.save_result(result)
+
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'save_path': save_path,
+                'result': result.to_dict()
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/returns/types', methods=['GET'])
+def api_returns_types():
+    """API: 获取收益率计算类型"""
+    try:
+        from mylib.returns_calculator import get_calculator
+
+        calculator = get_calculator()
+        methods = calculator.list_methods()
+
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'methods': methods
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/stock-pools', methods=['GET'])
+def api_stock_pools():
+    """API: 获取股票池列表"""
+    try:
+        from mylib.factor_factory import get_factory
+
+        factory = get_factory()
+        pools = factory.list_stock_pools()
+
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'stock_pools': pools
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
 # ==================== 启动 ====================
 
 def get_analyzer():
@@ -1088,6 +1587,15 @@ def get_analyzer():
         except Exception as e:
             print(f"Warning: Could not load data: {e}")
     return factor_analyzer
+
+
+def get_analysis_engine():
+    """懒加载因子实验室分析引擎"""
+    global analysis_engine
+    if analysis_engine is None:
+        from mylib.analysis_engine import get_analysis_engine as _get_analysis_engine_impl
+        analysis_engine = _get_analysis_engine_impl()
+    return analysis_engine
 
 if __name__ == '__main__':
     print("=" * 60)

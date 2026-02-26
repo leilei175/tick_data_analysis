@@ -1,11 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>仪表盘 - 高频因子分析平台</title>
-    {% extends "base.html" %}
-    {% block extra_css %}
+{% extends "base.html" %}
+{% block title %}仪表盘 - 量化研究中台{% endblock %}
+{% block header_title %}因子看板{% endblock %}
+{% block extra_css %}
     <style>
         .dashboard-header {
             display: flex;
@@ -137,10 +133,8 @@
             -webkit-overflow-scrolling: touch;
         }
     </style>
-    {% endblock %}
-</head>
-<body>
-    {% block content %}
+{% endblock %}
+{% block content %}
     <div class="dashboard-header fade-in">
         <div>
             <h1 class="dashboard-title">因子数据仪表盘</h1>
@@ -382,5 +376,3 @@
         document.addEventListener('DOMContentLoaded', loadDashboard);
     </script>
     {% endblock %}
-</body>
-</html>

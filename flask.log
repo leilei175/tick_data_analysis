@@ -1,0 +1,17 @@
+============================================================
+高频因子分析平台
+============================================================
+
+因子数据目录: /data1/code_git/tick_data_analysis/factor/by_factor
+启动服务器: http://localhost:9999
+API文档: http://localhost:9999/api/factors/list
+
+按 Ctrl+C 停止服务器
+============================================================
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:9999
+ * Running on http://192.168.31.158:9999
+[33mPress CTRL+C to quit[0m

@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+{% block title %}文档中心 - 量化研究中台{% endblock %}
+{% block header_title %}文档中心{% endblock %}
+
+{% block extra_css %}
+<style>
+.docs-layout {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    gap: 16px;
+    min-height: calc(100vh - 140px);
+}
+
+@media (max-width: 960px) {
+    .docs-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+.docs-panel,
+.docs-viewer {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+
+.docs-toolbar {
+    padding: 14px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+}
+
+.toolbar-row {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+}
+
+.sort-select {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    padding: 8px 10px;
+    font-size: 12px;
+}
+
+.tag-row {
+    margin-top: 10px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tag-chip {
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    background: var(--bg-secondary);
+}
+
+.tag-chip.active {
+    color: #fff;
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.search-input {
+    width: 100%;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    padding: 10px 12px;
+    font-size: 13px;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px rgba(15, 76, 129, 0.12);
+}
+
+.docs-list {
+    max-height: calc(100vh - 260px);
+    overflow: auto;
+}
+
+.recent-wrap {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-color);
+    background: #f8fbff;
+}
+
+.recent-title {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.recent-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.recent-item {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.doc-item {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: background .15s ease;
+}
+
+.doc-item:hover {
+    background: var(--bg-hover);
+}
+
+.doc-item.active {
+    background: rgba(15, 76, 129, 0.08);
+}
+
+.doc-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.doc-path {
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.doc-meta {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.doc-snippet {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.doc-tag {
+    display: inline-flex;
+    margin-top: 8px;
+    margin-right: 6px;
+    border: 1px solid #c7d4e8;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    color: #365b86;
+    background: #f3f8ff;
+}
+
+mark {
+    background: #fff3a3;
+    padding: 0 2px;
+}
+
+.viewer-header {
+    border-bottom: 1px solid var(--border-color);
+    padding: 14px 16px;
+    background: linear-gradient(90deg, #f9fbff 0%, #f2f7ff 100%);
+}
+
+.viewer-title {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.viewer-path {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.viewer-body {
+    padding: 16px;
+    color: var(--text-primary);
+    height: calc(100vh - 240px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    line-height: 1.7;
+}
+
+.viewer-body h1,
+.viewer-body h2,
+.viewer-body h3,
+.viewer-body h4 {
+    margin-top: 1.1em;
+    margin-bottom: .6em;
+}
+
+.viewer-body code {
+    background: #edf2fb;
+    padding: 2px 6px;
+    border-radius: 6px;
+}
+
+.viewer-body pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 12px;
+    border-radius: 10px;
+    overflow: auto;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="docs-layout">
+    <section class="docs-panel">
+        <div class="docs-toolbar">
+            <input id="docsSearch" class="search-input" placeholder="搜索文档标题/路径/内容..." />
+            <div style="margin-top:8px;color:var(--text-muted);font-size:12px;">共 <span id="docCount">0</span> 篇文档</div>
+            <div class="toolbar-row">
+                <select id="sortBy" class="sort-select">
+                    <option value="created_at">按创建时间</option>
+                    <option value="updated_at">按更新时间</option>
+                    <option value="title">按标题</option>
+                </select>
+                <select id="sortOrder" class="sort-select">
+                    <option value="desc">降序</option>
+                    <option value="asc">升序</option>
+                </select>
+            </div>
+            <div class="tag-row" id="tagRow"></div>
+        </div>
+        <div class="recent-wrap">
+            <div class="recent-title">最近访问</div>
+            <div class="recent-items" id="recentItems"></div>
+        </div>
+        <div class="docs-list" id="docsList"></div>
+    </section>
+
+    <section class="docs-viewer">
+        <div class="viewer-header">
+            <div class="viewer-title" id="viewerTitle">请选择文档</div>
+            <div class="viewer-path" id="viewerPath">-</div>
+        </div>
+        <div class="viewer-body" id="viewerBody">在左侧输入关键词并选择文档。</div>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let docs = [];
+let currentDocId = null;
+let selectedTag = '';
+let sortBy = 'created_at';
+let sortOrder = 'desc';
+const RECENT_KEY = 'quant_hub_recent_docs';
+
+async function loadDocs(query = '') {
+    const res = await fetch(
+        `/api/docs/index?q=${encodeURIComponent(query)}&tag=${encodeURIComponent(selectedTag)}&sort_by=${encodeURIComponent(sortBy)}&order=${encodeURIComponent(sortOrder)}`
+    );
+    const payload = await res.json();
+    if (payload.status !== 'success') return;
+    docs = payload.data.docs;
+    document.getElementById('docCount').textContent = payload.data.total;
+    renderTags(payload.data.tags || []);
+    renderDocsList();
+    if (docs.length > 0 && !currentDocId) {
+        openDoc(docs[0].id);
+    }
+}
+
+function renderDocsList() {
+    const listEl = document.getElementById('docsList');
+    if (docs.length === 0) {
+        listEl.innerHTML = '<div class="doc-item">未找到匹配文档</div>';
+        return;
+    }
+    listEl.innerHTML = docs.map(d => `
+        <article class="doc-item ${d.id === currentDocId ? 'active' : ''}" onclick="openDoc('${d.id}')">
+            <div class="doc-title">${d.title}</div>
+            <div class="doc-path">${d.path}</div>
+            <div class="doc-meta">创建: ${d.created_at || '-'}</div>
+            <div class="doc-snippet">${d.snippet || ''}</div>
+            <div>${(d.tags || []).map(tag => `<span class="doc-tag">${tag}</span>`).join('')}</div>
+        </article>
+    `).join('');
+}
+
+function renderTags(tags) {
+    const row = document.getElementById('tagRow');
+    const chips = [{ name: '全部', count: docs.length, all: true }, ...tags];
+    row.innerHTML = chips.map(t => {
+        const active = (t.all && !selectedTag) || (!t.all && selectedTag === t.name);
+        const label = t.all ? t.name : `${t.name} (${t.count})`;
+        return `<button class="tag-chip ${active ? 'active' : ''}" onclick="selectTag('${t.all ? '' : t.name}')">${label}</button>`;
+    }).join('');
+}
+
+function selectTag(tag) {
+    selectedTag = tag;
+    currentDocId = null;
+    loadDocs(document.getElementById('docsSearch').value || '');
+}
+
+function getRecentDocs() {
+    try {
+        return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+    } catch {
+        return [];
+    }
+}
+
+function setRecentDocs(items) {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(items.slice(0, 6)));
+}
+
+function pushRecent(doc) {
+    const items = getRecentDocs().filter(x => x.id !== doc.id);
+    items.unshift({ id: doc.id, title: doc.title });
+    setRecentDocs(items);
+    renderRecent();
+}
+
+function renderRecent() {
+    const items = getRecentDocs();
+    const el = document.getElementById('recentItems');
+    if (!items.length) {
+        el.innerHTML = '<span style="color:var(--text-muted);font-size:11px;">暂无</span>';
+        return;
+    }
+    el.innerHTML = items.map(x => `<span class="recent-item" onclick="openDoc('${x.id}')">${x.title}</span>`).join('');
+}
+
+async function openDoc(id) {
+    const res = await fetch(`/api/docs/content/${id}`);
+    const payload = await res.json();
+    if (payload.status !== 'success') return;
+    const doc = payload.data;
+    currentDocId = doc.id;
+    document.getElementById('viewerTitle').textContent = doc.title;
+    document.getElementById('viewerPath').textContent = `${doc.path} | 创建: ${doc.created_at || '-'} | 更新: ${doc.updated_at || '-'}`;
+    document.getElementById('viewerBody').innerHTML = doc.html;
+    pushRecent({ id: doc.id, title: doc.title });
+    renderDocsList();
+}
+
+const runSearch = debounce((text) => {
+    currentDocId = null;
+    loadDocs(text.trim());
+}, 200);
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('docsSearch').addEventListener('input', (e) => runSearch(e.target.value));
+    document.getElementById('sortBy').addEventListener('change', (e) => {
+        sortBy = e.target.value;
+        currentDocId = null;
+        loadDocs(document.getElementById('docsSearch').value || '');
+    });
+    document.getElementById('sortOrder').addEventListener('change', (e) => {
+        sortOrder = e.target.value;
+        currentDocId = null;
+        loadDocs(document.getElementById('docsSearch').value || '');
+    });
+    renderRecent();
+    loadDocs();
+});
+</script>
+{% endblock %}

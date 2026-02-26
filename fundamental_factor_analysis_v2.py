@@ -25,11 +25,8 @@ plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 import seaborn as sns
 
-# 导入数据下载模块
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from download_financial_statements import get_income, get_balance, get_cashflow
-from download_daily_basic import get_close
-from download_daily_data import get_daily
+# 导入数据下载模块（使用适配器保持向后兼容）
+from data_adapters import get_income, get_balance, get_cashflow, get_close, get_daily
 
 
 class FundamentalFactorAnalyzerV2:

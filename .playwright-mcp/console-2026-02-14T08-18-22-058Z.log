@@ -1,0 +1,5 @@
+[     966ms] [ERROR] Failed to load resource: the server responded with a status of 404 (NOT FOUND) @ http://127.0.0.1:9998/favicon.ico:0
+[   16753ms] [ERROR] 加载因子列表失败: TypeError: factors.forEach is not a function
+    at loadFactors (http://127.0.0.1:9998/static/js/factor_lab.js:127:21) @ http://127.0.0.1:9998/static/js/factor_lab.js:134
+[   37819ms] [ERROR] 加载因子列表失败: TypeError: factors.forEach is not a function
+    at loadFactors (http://127.0.0.1:9998/static/js/factor_lab.js:127:21) @ http://127.0.0.1:9998/static/js/factor_lab.js:134

@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>{% block title %}高频因子分析平台{% endblock %}</title>
+    <title>{% block title %}量化研究中台{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     {% block extra_css %}{% endblock %}
 </head>
 <body>
@@ -28,7 +28,7 @@
                         <path d="M3 3v18h18"/>
                         <path d="M18 9l-5-6-4 8-3-2"/>
                     </svg>
-                    <span class="logo-text">HF Factor</span>
+                    <span class="logo-text">Quant Hub</span>
                 </div>
             </div>
 
@@ -95,6 +95,20 @@
                         <line x1="9" y1="21" x2="9" y2="9"/>
                     </svg>
                     <span>数据管理</span>
+                </a>
+                <a href="{{ url_for('docs_center') }}" class="nav-item {% if active_page == 'docs' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                        <path d="M6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
+                    </svg>
+                    <span>文档中心</span>
+                </a>
+                <a href="{{ url_for('factor_lab') }}" class="nav-item {% if active_page == 'factor-lab' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4"/>
+                        <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                    <span>因子实验室</span>
                 </a>
             </nav>
 

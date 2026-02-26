@@ -140,8 +140,8 @@ def init_tushare():
         raise ImportError("未安装 tushare，请运行: pip install tushare")
 
     token = get_token()
-    ts.set_token(token)
-    pro = ts.pro_api()
+        ts.set_token(token)
+        pro = ts.pro_api()
     return pro
 
 

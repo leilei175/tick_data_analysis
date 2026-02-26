@@ -51,6 +51,9 @@ from typing import Dict, List, Tuple, Optional
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from mylib.date_utils import parse_date as _parse_date
+from mylib.date_utils import date_to_str as _date_to_str
+from mylib.date_utils import get_quarter_from_date as _get_quarter_from_date
 
 # =============================================================================
 # 配置
@@ -86,33 +89,9 @@ EXCLUDE_COLUMNS = ['ts_code', 'ann_date', 'f_ann_date', 'end_date', 'report_type
 # 辅助函数
 # =============================================================================
 
-def parse_date(date_str: str) -> datetime:
-    """解析日期字符串"""
-    if isinstance(date_str, datetime):
-        return date_str
-    date_str = str(date_str).replace('-', '')
-    return datetime.strptime(date_str, '%Y%m%d')
-
-
-def get_quarter_from_date(date: datetime) -> str:
-    """根据日期获取季度"""
-    month = date.month
-    if month <= 3:
-        end_month = '0331'  # Q1
-    elif month <= 6:
-        end_month = '0630'  # Q2
-    elif month <= 9:
-        end_month = '0930'  # Q3
-    else:
-        end_month = '1231'  # Q4
-    return f'{date.year}{end_month}'
-
-
-def date_to_str(date: datetime, fmt: str = '%Y%m%d') -> str:
-    """日期转字符串"""
-    if isinstance(date, str):
-        return date.replace('-', '')
-    return date.strftime(fmt)
+parse_date = _parse_date
+get_quarter_from_date = _get_quarter_from_date
+date_to_str = _date_to_str
 
 
 def get_trade_dates_between(start_date: str, end_date: str) -> List[str]:

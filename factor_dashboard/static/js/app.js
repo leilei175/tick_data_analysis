@@ -98,9 +98,19 @@ function getPlotlyTheme() {
         plot_bgcolor: 'transparent',
         font: {
             color: '#94a3b8',
-            family: 'Inter, sans-serif'
+            family: 'IBM Plex Sans, Noto Sans SC, sans-serif'
         }
     };
+}
+
+// 渲染统一因子按钮组，减少页面重复代码
+function renderFactorButtons(containerId, factors, currentFactor, onSelectFnName) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = factors.map(factor => `
+        <button class="factor-btn ${factor === currentFactor ? 'active' : ''}"
+                onclick="window['${onSelectFnName}']('${factor}')">${factor}</button>
+    `).join('');
 }
 
 // 创建热力图
