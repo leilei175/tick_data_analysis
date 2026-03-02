@@ -1,0 +1,21 @@
+{
+  "task_id": "db6d7d573d49",
+  "script": "custom:demo_custom_backtest.py",
+  "status": "success",
+  "message": "回测完成",
+  "progress": 100,
+  "params": {
+    "start": "20220101",
+    "end": "20220331",
+    "daily_dir": "daily_data/daily",
+    "symbols": "",
+    "symbol_limit": 8,
+    "cash": 1000000.0,
+    "commission": 0.001,
+    "extra_args": ""
+  },
+  "output_dir": "/data1/code_git/tick_data_analysis/backtest/web_runs/db6d7d573d49",
+  "created_at": "2026-02-28 17:03:42",
+  "started_at": "2026-02-28 17:03:42",
+  "finished_at": "2026-02-28 17:03:43"
+}

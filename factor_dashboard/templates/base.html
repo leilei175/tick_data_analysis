@@ -110,6 +110,17 @@
                     </svg>
                     <span>因子实验室</span>
                 </a>
+                <a href="{{ url_for('backtest_page') }}" class="nav-item {% if active_page == 'backtest' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 3v18h18"/>
+                        <path d="M7 14l3-3 3 2 4-5"/>
+                        <circle cx="7" cy="14" r="1"/>
+                        <circle cx="10" cy="11" r="1"/>
+                        <circle cx="13" cy="13" r="1"/>
+                        <circle cx="17" cy="8" r="1"/>
+                    </svg>
+                    <span>回测中心</span>
+                </a>
             </nav>
 
             <div class="sidebar-footer">

@@ -79,9 +79,6 @@ DATA_DIRS = {
 
 # 字段配置已从 mylib.constants 导入
 
-# 当前日期（模拟2026年2月11日）
-TODAY = datetime(2026, 2, 11).date()
-
 def init_tushare():
     """初始化 Tushare"""
     config_path = os.path.join(_SCRIPT_DIR, 'config.py')
@@ -104,7 +101,7 @@ def date_to_str(date: datetime, fmt: str = '%Y%m%d') -> str:
 
 def get_today_str() -> str:
     """获取今天日期字符串"""
-    return TODAY.strftime('%Y%m%d')
+    return datetime.now().strftime('%Y%m%d')
 
 
 def is_after_market_close() -> bool:
@@ -573,9 +570,12 @@ def update_financial_data(
     if start_date is None:
         latest_dates = get_all_latest_dates()
         # 使用财务数据中最晚的日期
-        latest_financial = max(
-            latest_dates.get(t, '20250101')
+        financial_latest_dates = [
+            latest_dates.get(t) or '20250101'
             for t in ['cashflow_daily', 'income_daily', 'balance_daily']
+        ]
+        latest_financial = max(
+            financial_latest_dates
         )
         start_date = latest_financial
 

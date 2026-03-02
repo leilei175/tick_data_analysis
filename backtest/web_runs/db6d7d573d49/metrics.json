@@ -1,0 +1,10 @@
+{
+  "initial_cash": 1000000.0,
+  "final_value": 955915.6356705177,
+  "total_return": -0.04408436432948226,
+  "annual_return": -0.1778967081363092,
+  "max_drawdown_pct": 18.282120925895594,
+  "sharpe": 0.0,
+  "symbols_count": 8,
+  "note": "自定义脚本示例：等权日收益组合"
+}

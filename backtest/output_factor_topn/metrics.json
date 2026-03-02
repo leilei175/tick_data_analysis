@@ -1,0 +1,12 @@
+{
+  "initial_cash": 1000000.0,
+  "final_value": 955557.3326599996,
+  "total_return": -0.045460514318021936,
+  "annual_return": -0.04623602897096759,
+  "max_drawdown_pct": 35.410093994926264,
+  "sharpe": 0.0,
+  "symbols_count": 30,
+  "lookback": 20,
+  "topn": 8,
+  "rebalance_days": 5
+}

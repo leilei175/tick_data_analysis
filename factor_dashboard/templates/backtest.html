@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+
+{% block title %}回测中心 - 量化研究中台{% endblock %}
+{% block header_title %}回测中心{% endblock %}
+
+{% block content %}
+<div class="content-section">
+    <div class="card-header">
+        <div>
+            <h2 class="card-title">回测任务配置</h2>
+            <p class="card-subtitle">选择脚本、配置参数并启动回测</p>
+        </div>
+        <div style="display:flex; gap: 8px;">
+            <button class="btn" onclick="loadScripts()">刷新脚本</button>
+            <button class="btn btn-primary" onclick="startBacktest()">启动回测</button>
+        </div>
+    </div>
+
+    <div class="section-card" style="margin-bottom: 16px;">
+        <div class="section-header">
+            <span class="section-title">脚本选择</span>
+        </div>
+        <div style="padding: 14px;">
+            <select id="scriptSelect" class="search-input" style="max-width: 520px;" onchange="renderParams()"></select>
+            <div id="scriptDesc" style="margin-top: 8px; color: var(--text-muted); font-size: 12px;"></div>
+        </div>
+    </div>
+
+    <div class="section-card" style="margin-bottom: 16px;">
+        <div class="section-header">
+            <span class="section-title">参数配置</span>
+        </div>
+        <div id="paramsGrid" style="padding: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;"></div>
+    </div>
+
+    <div class="section-card">
+        <div class="section-header">
+            <span class="section-title">任务进度</span>
+            <span id="taskStatusText" style="font-size: 12px; color: var(--text-muted);">未启动</span>
+        </div>
+        <div style="padding: 14px;">
+            <div style="height: 10px; border-radius: 999px; background: var(--bg-tertiary); overflow: hidden; border: 1px solid var(--border-color);">
+                <div id="progressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #0ea5e9, #22c55e); transition: width .3s;"></div>
+            </div>
+            <div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);" id="taskMeta">任务ID: -</div>
+        </div>
+        <div style="padding: 0 14px 14px 14px;">
+            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px;">实时日志</div>
+            <div id="logBox" style="height: 220px; overflow-y: auto; border: 1px solid var(--border-color); background: var(--bg-tertiary); border-radius: var(--radius-md); padding: 10px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-secondary);">
+                <div style="color: var(--text-muted);">等待任务启动...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-card" style="margin-top:16px;">
+        <div class="section-header">
+            <span class="section-title">自定义脚本编辑器</span>
+            <span style="font-size:12px; color:var(--text-muted);">可手动编写并保存到 `backtest/custom_scripts/`</span>
+        </div>
+        <div style="padding: 14px;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+                <select id="customScriptSelect" class="search-input" style="max-width:360px;"></select>
+                <button class="btn" onclick="loadCustomContent()">加载脚本</button>
+                <button class="btn" onclick="useCustomScriptInRunner()">作为当前回测脚本</button>
+                <button class="btn btn-primary" onclick="saveCustomScript()">保存脚本</button>
+                <button class="btn" onclick="fillDemoName()">示例脚本名</button>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+                <label style="font-size:12px; color:var(--text-muted);">脚本文件名</label>
+                <input id="customScriptName" class="search-input" style="max-width:360px;" placeholder="my_strategy.py" />
+            </div>
+            <textarea id="customScriptContent" style="width:100%; min-height:320px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-color); border-radius: var(--radius-md); padding:10px; font-family:'JetBrains Mono', monospace; font-size:12px;"></textarea>
+        </div>
+    </div>
+
+    <div class="section-card" style="margin-top:16px;">
+        <div class="section-header">
+            <span class="section-title">历史回测结果</span>
+            <button class="btn btn-sm" onclick="loadHistory()">刷新</button>
+        </div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>任务ID</th>
+                        <th>脚本</th>
+                        <th>状态</th>
+                        <th>创建时间</th>
+                        <th>最终资产</th>
+                        <th>总收益率</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="historyBody">
+                    <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let scripts = [];
+let currentTaskId = null;
+let pollTimer = null;
+
+async function loadScripts() {
+    const resp = await apiRequest('/api/backtest/scripts');
+    if (resp.status !== 'success') {
+        alert(resp.message || '加载脚本失败');
+        return;
+    }
+    scripts = resp.data.scripts || [];
+    const select = document.getElementById('scriptSelect');
+    select.innerHTML = scripts.map(s => `<option value="${s.script}">${s.label}</option>`).join('');
+    renderParams();
+}
+
+function renderParams() {
+    const script = document.getElementById('scriptSelect').value;
+    const cfg = scripts.find(s => s.script === script);
+    const grid = document.getElementById('paramsGrid');
+    const desc = document.getElementById('scriptDesc');
+    if (!cfg) {
+        grid.innerHTML = '';
+        desc.textContent = '';
+        return;
+    }
+    desc.textContent = cfg.description || '';
+    grid.innerHTML = cfg.params.map(p => {
+        const inputType = (p.type === 'int' || p.type === 'float') ? 'number' : 'text';
+        const step = p.type === 'float' ? 'step="0.0001"' : '';
+        return `
+            <div style="display:flex; flex-direction:column; gap:6px;">
+                <label style="font-size:12px; color: var(--text-muted);">${p.label} ${p.required ? '*' : ''}</label>
+                <input id="param_${p.name}" class="search-input" type="${inputType}" ${step} value="${p.default ?? ''}" />
+            </div>
+        `;
+    }).join('');
+}
+
+function collectParams() {
+    const script = document.getElementById('scriptSelect').value;
+    const cfg = scripts.find(s => s.script === script);
+    if (!cfg) return {};
+    const params = {};
+    for (const p of cfg.params) {
+        const el = document.getElementById(`param_${p.name}`);
+        params[p.name] = el ? el.value : '';
+    }
+    return params;
+}
+
+async function startBacktest() {
+    const script = document.getElementById('scriptSelect').value;
+    if (!script) {
+        alert('请选择回测脚本');
+        return;
+    }
+    const payload = { script, params: collectParams() };
+    const resp = await apiRequest('/api/backtest/run', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+    });
+    if (resp.status !== 'success') {
+        alert(resp.message || '启动失败');
+        return;
+    }
+    currentTaskId = resp.data.task_id;
+    document.getElementById('taskMeta').textContent = `任务ID: ${currentTaskId}`;
+    document.getElementById('taskStatusText').textContent = '任务已启动';
+    document.getElementById('logBox').innerHTML = '<div style="color: var(--text-muted);">任务启动中...</div>';
+    startPolling();
+    loadHistory();
+}
+
+function updateTaskUI(data) {
+    document.getElementById('progressBar').style.width = `${data.progress || 0}%`;
+    document.getElementById('taskStatusText').textContent = `${data.status} | ${data.message || ''}`;
+    const logBox = document.getElementById('logBox');
+    if (data.logs && data.logs.length) {
+        logBox.innerHTML = data.logs.map(line => `<div>${line}</div>`).join('');
+        logBox.scrollTop = logBox.scrollHeight;
+    }
+}
+
+function stopPolling() {
+    if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+}
+
+function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(async () => {
+        if (!currentTaskId) return;
+        const resp = await apiRequest(`/api/backtest/task/${currentTaskId}`);
+        if (resp.status !== 'success') return;
+        const data = resp.data;
+        updateTaskUI(data);
+        if (data.status === 'success') {
+            stopPolling();
+            loadHistory();
+            setTimeout(() => {
+                window.location.href = `/backtest/result/${currentTaskId}`;
+            }, 800);
+        } else if (data.status === 'error') {
+            stopPolling();
+            loadHistory();
+        }
+    }, 1500);
+}
+
+async function loadCustomScripts() {
+    const resp = await apiRequest('/api/backtest/custom/list');
+    const select = document.getElementById('customScriptSelect');
+    if (resp.status !== 'success') {
+        select.innerHTML = '<option value="">加载失败</option>';
+        return;
+    }
+    const scripts = resp.data.scripts || [];
+    if (!scripts.length) {
+        select.innerHTML = '<option value="">暂无自定义脚本</option>';
+        return;
+    }
+    select.innerHTML = scripts.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
+    document.getElementById('customScriptName').value = scripts[0].name;
+}
+
+async function loadCustomContent() {
+    const name = document.getElementById('customScriptSelect').value || document.getElementById('customScriptName').value.trim();
+    if (!name) {
+        alert('请选择脚本');
+        return;
+    }
+    const resp = await apiRequest(`/api/backtest/custom/content?name=${encodeURIComponent(name)}`);
+    if (resp.status !== 'success') {
+        alert(resp.message || '加载脚本失败');
+        return;
+    }
+    document.getElementById('customScriptName').value = resp.data.name;
+    document.getElementById('customScriptContent').value = resp.data.content || '';
+}
+
+async function saveCustomScript() {
+    const name = document.getElementById('customScriptName').value.trim();
+    const content = document.getElementById('customScriptContent').value;
+    if (!name) {
+        alert('请输入脚本文件名，如 my_strategy.py');
+        return;
+    }
+    const resp = await apiRequest('/api/backtest/custom/save', {
+        method: 'POST',
+        body: JSON.stringify({ name, content })
+    });
+    if (resp.status !== 'success') {
+        alert(resp.message || '保存失败');
+        return;
+    }
+    await loadCustomScripts();
+    await loadScripts();
+    alert('脚本已保存');
+}
+
+function fillDemoName() {
+    document.getElementById('customScriptName').value = 'demo_custom_backtest.py';
+}
+
+async function useCustomScriptInRunner() {
+    const name = document.getElementById('customScriptName').value.trim();
+    if (!name) {
+        alert('请先输入或选择脚本名');
+        return;
+    }
+    await loadScripts();
+    const select = document.getElementById('scriptSelect');
+    const value = `custom:${name}`;
+    const exists = Array.from(select.options).some(opt => opt.value === value);
+    if (!exists) {
+        alert('脚本未保存，请先点击“保存脚本”');
+        return;
+    }
+    select.value = value;
+    renderParams();
+}
+
+async function loadHistory() {
+    const resp = await apiRequest('/api/backtest/history?limit=200');
+    const body = document.getElementById('historyBody');
+    if (resp.status !== 'success') {
+        body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">${resp.message || '加载失败'}</td></tr>`;
+        return;
+    }
+    const items = resp.data.items || [];
+    if (!items.length) {
+        body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">暂无历史结果</td></tr>';
+        return;
+    }
+    body.innerHTML = items.map(item => `
+        <tr>
+            <td style="font-family:'JetBrains Mono', monospace; font-size:12px;">${item.task_id}</td>
+            <td>${item.script || '-'}</td>
+            <td>${item.status || '-'}</td>
+            <td>${item.created_at || '-'}</td>
+            <td>${item.final_value ?? '-'}</td>
+            <td>${item.total_return ?? '-'}</td>
+            <td><a class="btn btn-sm" href="${item.result_url}">查看结果</a></td>
+        </tr>
+    `).join('');
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadScripts();
+    await loadCustomScripts();
+    await loadHistory();
+});
+</script>
+{% endblock %}

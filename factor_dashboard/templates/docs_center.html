@@ -223,10 +223,109 @@ mark {
     border-radius: 10px;
     overflow: auto;
 }
+
+.viewer-body table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.viewer-body img {
+    max-width: 100%;
+    height: auto;
+}
+
+@media (max-width: 960px) {
+    .mobile-switch {
+        display: flex !important;
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+
+    .mobile-switch .btn {
+        flex: 1;
+    }
+
+    .mobile-switch .btn.active {
+        background: var(--accent-primary);
+        color: #fff;
+        border-color: var(--accent-primary);
+    }
+
+    .docs-layout {
+        min-height: auto;
+        gap: 12px;
+    }
+
+    .docs-layout.mobile-list .docs-viewer {
+        display: none;
+    }
+
+    .docs-layout.mobile-viewer .docs-panel {
+        display: none;
+    }
+
+    .docs-panel,
+    .docs-viewer {
+        overflow: visible;
+    }
+
+    .docs-list {
+        max-height: none;
+    }
+
+    .viewer-path {
+        white-space: normal;
+        word-break: break-all;
+    }
+
+    .viewer-body {
+        height: auto;
+        max-height: none;
+        overflow: visible;
+        padding: 14px;
+        line-height: 1.8;
+    }
+}
+
+@media (max-width: 480px) {
+    .docs-toolbar {
+        padding: 12px;
+    }
+
+    .toolbar-row {
+        flex-direction: column;
+    }
+
+    .sort-select {
+        width: 100%;
+    }
+
+    .viewer-header {
+        padding: 12px;
+    }
+
+    .viewer-title {
+        font-size: 15px;
+    }
+
+    .doc-title {
+        font-size: 13px;
+    }
+
+    .doc-snippet {
+        font-size: 11px;
+    }
+}
 </style>
 {% endblock %}
 
 {% block content %}
+<div class="mobile-switch" id="mobileSwitch" style="display:none;">
+    <button class="btn active" id="showListBtn" onclick="switchMobileView('list')">文档列表</button>
+    <button class="btn" id="showViewerBtn" onclick="switchMobileView('viewer')">查看正文</button>
+</div>
 <div class="docs-layout">
     <section class="docs-panel">
         <div class="docs-toolbar">
@@ -270,6 +369,26 @@ let selectedTag = '';
 let sortBy = 'created_at';
 let sortOrder = 'desc';
 const RECENT_KEY = 'quant_hub_recent_docs';
+let mobileView = 'list';
+
+function isMobileDocs() {
+    return window.innerWidth <= 960;
+}
+
+function switchMobileView(view) {
+    mobileView = view === 'viewer' ? 'viewer' : 'list';
+    const layout = document.querySelector('.docs-layout');
+    const listBtn = document.getElementById('showListBtn');
+    const viewerBtn = document.getElementById('showViewerBtn');
+    if (!layout || !listBtn || !viewerBtn) return;
+
+    layout.classList.remove('mobile-list', 'mobile-viewer');
+    if (isMobileDocs()) {
+        layout.classList.add(mobileView === 'viewer' ? 'mobile-viewer' : 'mobile-list');
+    }
+    listBtn.classList.toggle('active', mobileView === 'list');
+    viewerBtn.classList.toggle('active', mobileView === 'viewer');
+}
 
 async function loadDocs(query = '') {
     const res = await fetch(
@@ -359,6 +478,10 @@ async function openDoc(id) {
     document.getElementById('viewerBody').innerHTML = doc.html;
     pushRecent({ id: doc.id, title: doc.title });
     renderDocsList();
+    if (isMobileDocs()) {
+        switchMobileView('viewer');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 }
 
 const runSearch = debounce((text) => {
@@ -378,6 +501,8 @@ document.addEventListener('DOMContentLoaded', () => {
         currentDocId = null;
         loadDocs(document.getElementById('docsSearch').value || '');
     });
+    window.addEventListener('resize', () => switchMobileView(mobileView));
+    switchMobileView('list');
     renderRecent();
     loadDocs();
 });

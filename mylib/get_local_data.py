@@ -13,9 +13,22 @@ DAILY_BASIC_DIR = './daily_data/daily_basic/'
 CASHFLOW_DAILY_DIR = './daily_data/cashflow_daily/'
 INCOME_DAILY_DIR = './daily_data/income_daily/'
 BALANCE_DAILY_DIR = './daily_data/balance_daily/'
+CASHFLOW_DAILY_CN_DIR = './daily_data/cashflow_daily_cn/'
+INCOME_DAILY_CN_DIR = './daily_data/income_daily_cn/'
+BALANCE_DAILY_CN_DIR = './daily_data/balance_daily_cn/'
 
 # 可用数据类型
-DATA_TYPES = ['daily', 'daily_basic', 'cashflow_daily', 'income_daily', 'balance_daily']
+DATA_TYPE_META = {
+    'daily': {'data_dir': DAILY_DIR, 'prefix': 'daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'daily_basic': {'data_dir': DAILY_BASIC_DIR, 'prefix': 'daily_basic', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'cashflow_daily': {'data_dir': CASHFLOW_DAILY_DIR, 'prefix': 'cashflow_daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'income_daily': {'data_dir': INCOME_DAILY_DIR, 'prefix': 'income_daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'balance_daily': {'data_dir': BALANCE_DAILY_DIR, 'prefix': 'balance_daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'cashflow_daily_cn': {'data_dir': CASHFLOW_DAILY_CN_DIR, 'prefix': 'cashflow_daily_cn', 'code_col': 'TS代码', 'date_col': '交易日期'},
+    'income_daily_cn': {'data_dir': INCOME_DAILY_CN_DIR, 'prefix': 'income_daily_cn', 'code_col': 'TS代码', 'date_col': '交易日期'},
+    'balance_daily_cn': {'data_dir': BALANCE_DAILY_CN_DIR, 'prefix': 'balance_daily_cn', 'code_col': 'TS代码', 'date_col': '交易日期'},
+}
+DATA_TYPES = list(DATA_TYPE_META.keys())
 
 
 def _parse_date_from_filename(filename: str, prefix: str = 'daily') -> Optional[int]:
@@ -81,10 +94,12 @@ def _find_data_files(
 
 def _read_single_file(args: tuple) -> tuple:
     """读取单个parquet文件"""
-    date, filepath, filed = args
+    date, filepath, filed, code_col = args
     try:
-        table = pq.read_table(filepath, columns=['ts_code', filed])
+        table = pq.read_table(filepath, columns=[code_col, filed])
         df = table.to_pandas()
+        if code_col != 'ts_code':
+            df = df.rename(columns={code_col: 'ts_code'})
         df['trade_date'] = date
         return df
     except Exception:
@@ -94,6 +109,44 @@ def _read_single_file(args: tuple) -> tuple:
 def _get_merged_file_path(data_dir: str, year: str) -> Path:
     """获取合并后的年度文件路径"""
     return Path(data_dir) / f'{year}_all.parquet'
+
+def _read_merged_file(
+    merged_file: Path,
+    columns: List[str],
+    code_col: str,
+    sec_list: Optional[List[str]] = None
+) -> pd.DataFrame:
+    """
+    读取年度合并文件（仅读取必要列）。
+    优先使用 pyarrow 并下推股票过滤，失败时回退 pandas.read_parquet。
+    """
+    read_columns = [c for c in dict.fromkeys(columns) if c]
+    filters = None
+    if sec_list:
+        filters = [(code_col, 'in', sec_list)]
+
+    try:
+        table = pq.read_table(str(merged_file), columns=read_columns, filters=filters)
+        return table.to_pandas()
+    except Exception:
+        # 回退路径：至少保证列裁剪仍生效
+        return pd.read_parquet(merged_file, columns=read_columns)
+
+def _get_merged_max_date(data_dir: str, year: str, date_col: str = 'trade_date') -> Optional[int]:
+    """获取年度合并文件中的最大trade_date，失败时返回None"""
+    merged_file = _get_merged_file_path(data_dir, year)
+    if not merged_file.exists():
+        return None
+    try:
+        table = pq.read_table(merged_file, columns=[date_col])
+        if table.num_rows == 0:
+            return None
+        arr = table.column(date_col).to_pandas()
+        if arr.empty:
+            return None
+        return int(pd.to_numeric(arr, errors='coerce').dropna().max())
+    except Exception:
+        return None
 
 
 def _is_merged_file_available(data_dir: str, start: Optional[str], end: Optional[str]) -> bool:
@@ -113,16 +166,97 @@ def _is_merged_file_available(data_dir: str, start: Optional[str], end: Optional
     return False
 
 
+def _normalize_sec_list(sec_list: Optional[List[str]]) -> Optional[List[str]]:
+    """规范化股票代码列表：去空白、转大写、去重。"""
+    if sec_list is None:
+        return None
+    norm = []
+    seen = set()
+    for s in sec_list:
+        if s is None:
+            continue
+        v = str(s).strip().upper()
+        if not v:
+            continue
+        if v not in seen:
+            seen.add(v)
+            norm.append(v)
+    return norm
+
+
+def list_data_fields(
+    data_type: str = 'daily',
+    data_dir: Optional[str] = None,
+    include_meta: bool = False,
+    start: Optional[str] = None,
+    end: Optional[str] = None
+) -> List[str]:
+    """
+    查看指定 data_type 的可用字段名。
+
+    Args:
+        data_type: 数据类型
+        data_dir: 自定义目录，None 时使用默认目录
+        include_meta: 是否包含代码/日期列
+        start: 可选，日期范围起点（用于辅助选择样本文件）
+        end: 可选，日期范围终点（用于辅助选择样本文件）
+
+    Returns:
+        List[str]: 字段名列表
+    """
+    if data_type not in DATA_TYPES:
+        raise ValueError(f"不支持的数据类型: {data_type}，支持: {DATA_TYPES}")
+
+    meta = DATA_TYPE_META[data_type]
+    code_col = meta['code_col']
+    date_col = meta['date_col']
+
+    if data_dir is None:
+        data_dir = meta['data_dir']
+        prefix = meta['prefix']
+    else:
+        prefix = data_type
+
+    data_path = Path(data_dir)
+
+    # 优先使用年度合并文件读取 schema（更快）
+    merged_files = sorted(data_path.glob('*_all.parquet'))
+    if merged_files:
+        try:
+            schema_names = pq.read_schema(str(merged_files[-1])).names
+            if include_meta:
+                return schema_names
+            return [c for c in schema_names if c not in [code_col, date_col]]
+        except Exception:
+            pass
+
+    # 回退到任意一个日文件
+    files_with_dates = _find_data_files(data_dir, prefix, start, end)
+    if not files_with_dates and (start or end):
+        files_with_dates = _find_data_files(data_dir, prefix, None, None)
+    if not files_with_dates:
+        return []
+
+    sample_file = files_with_dates[-1][1]
+    try:
+        schema_names = pq.read_schema(sample_file).names
+        if include_meta:
+            return schema_names
+        return [c for c in schema_names if c not in [code_col, date_col]]
+    except Exception:
+        return []
+
+
 def get_local_data(
     sec_list: Union[List[str], None] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
-    filed: str = 'close',
+    filed: Union[str, List[str]] = 'close',
     data_type: str = 'daily',
     data_dir: Optional[str] = None,
     parallel: bool = True,
     max_workers: int = 8
-) -> pd.DataFrame:
+) -> Union[pd.DataFrame, Dict[str, pd.DataFrame]]:
     """
     获取日频数据
 
@@ -137,7 +271,10 @@ def get_local_data(
         max_workers: 并行线程数（默认8）
 
     Returns:
-        DataFrame: index为日期，columns为股票代码
+        filed 为单字段时:
+            DataFrame: index为日期，columns为股票代码
+        filed='all' 或 filed 为字段列表时:
+            Dict[str, DataFrame]: {字段名: 宽表DataFrame}
 
     Example:
         >>> # 日线收盘价
@@ -150,33 +287,75 @@ def get_local_data(
     # 验证 data_type
     if data_type not in DATA_TYPES:
         raise ValueError(f"不支持的数据类型: {data_type}，支持: {DATA_TYPES}")
+    sec_list = _normalize_sec_list(sec_list)
+
+    # 批量字段读取
+    if isinstance(filed, str) and filed.lower() == 'all':
+        fields = list_data_fields(
+            data_type=data_type,
+            data_dir=data_dir,
+            include_meta=False,
+            start=start,
+            end=end
+        )
+        if not fields:
+            return {}
+
+        # 优先使用批量读取路径
+        try:
+            return get_all_data(
+                data_type=data_type,
+                start=start,
+                end=end,
+                sec_list=sec_list,
+                fields=fields,
+                parallel=parallel
+            )
+        except Exception:
+            pass
+
+        return {
+            f: get_local_data(
+                sec_list=sec_list,
+                start=start,
+                end=end,
+                filed=f,
+                data_type=data_type,
+                data_dir=data_dir,
+                parallel=parallel,
+                max_workers=max_workers
+            )
+            for f in fields
+        }
+
+    if isinstance(filed, (list, tuple, set)):
+        return {
+            str(f): get_local_data(
+                sec_list=sec_list,
+                start=start,
+                end=end,
+                filed=str(f),
+                data_type=data_type,
+                data_dir=data_dir,
+                parallel=parallel,
+                max_workers=max_workers
+            )
+            for f in filed
+        }
+
+    meta = DATA_TYPE_META[data_type]
 
     # 根据 data_type 确定默认目录和文件前缀
     if data_dir is None:
-        if data_type == 'daily':
-            data_dir = DAILY_DIR
-            prefix = 'daily'
-        elif data_type == 'daily_basic':
-            data_dir = DAILY_BASIC_DIR
-            prefix = 'daily_basic'
-        elif data_type == 'cashflow_daily':
-            data_dir = CASHFLOW_DAILY_DIR
-            prefix = 'cashflow_daily'
-        elif data_type == 'income_daily':
-            data_dir = INCOME_DAILY_DIR
-            prefix = 'income_daily'
-        else:  # balance_daily
-            data_dir = BALANCE_DAILY_DIR
-            prefix = 'balance_daily'
+        data_dir = meta['data_dir']
+        prefix = meta['prefix']
+        code_col = meta['code_col']
+        date_col = meta['date_col']
     else:
         # 从 data_dir 推断 prefix
         prefix = data_type
-
-    # 查找文件
-    files_with_dates = _find_data_files(data_dir, prefix, start, end)
-
-    if not files_with_dates:
-        return pd.DataFrame()
+        code_col = meta['code_col']
+        date_col = meta['date_col']
 
     # 构建数据
     dfs = []
@@ -186,6 +365,7 @@ def get_local_data(
     end_year = end[:4] if end else None
     is_single_year = (start_year == end_year and
                       _is_merged_file_available(data_dir, start, end))
+    read_columns = [code_col, date_col, filed]
 
     if is_single_year and parallel:
         # 单年：使用合并文件
@@ -193,11 +373,20 @@ def get_local_data(
         merged_file = _get_merged_file_path(data_dir, year)
         print(f"[优化] 使用合并文件: {merged_file.name}")
 
-        df_all = pd.read_parquet(merged_file)
+        df_all = _read_merged_file(
+            merged_file=merged_file,
+            columns=read_columns,
+            code_col=code_col,
+            sec_list=sec_list
+        )
 
         # 按日期过滤
         start_int = int(start)
         end_int = int(end)
+        if date_col != 'trade_date' and date_col in df_all.columns:
+            df_all = df_all.rename(columns={date_col: 'trade_date'})
+        if code_col != 'ts_code' and code_col in df_all.columns:
+            df_all = df_all.rename(columns={code_col: 'ts_code'})
         if df_all['trade_date'].dtype == object:
             df_all['trade_date'] = df_all['trade_date'].astype(int)
         df_all = df_all[(df_all['trade_date'] >= start_int) &
@@ -208,7 +397,12 @@ def get_local_data(
         def read_year_file(year):
             merged_file = _get_merged_file_path(data_dir, year)
             if merged_file.exists():
-                return pd.read_parquet(merged_file)
+                return _read_merged_file(
+                    merged_file=merged_file,
+                    columns=read_columns,
+                    code_col=code_col,
+                    sec_list=sec_list
+                )
             return None
 
         def read_year_daily(year):
@@ -216,14 +410,19 @@ def get_local_data(
             year_dir = Path(data_dir) / year
             if not year_dir.exists():
                 return None
-            files = list(year_dir.glob('*/daily_*.parquet'))
+            files = list(year_dir.glob(f'*/{prefix}_*.parquet'))
             if not files:
                 return None
             dfs = []
             for f in sorted(files):
                 try:
-                    df = pd.read_parquet(f, columns=['ts_code', filed])
-                    df['trade_date'] = int(f.name.split('_')[1].split('.')[0])
+                    df = pd.read_parquet(f, columns=[code_col, filed])
+                    if code_col != 'ts_code':
+                        df = df.rename(columns={code_col: 'ts_code'})
+                    file_date = _parse_date_from_filename(f.name, prefix)
+                    if file_date is None:
+                        continue
+                    df['trade_date'] = file_date
                     dfs.append(df)
                 except:
                     pass
@@ -242,6 +441,12 @@ def get_local_data(
         for yr in all_years:
             merged_file = _get_merged_file_path(data_dir, str(yr))
             if merged_file.exists():
+                # 若合并文件落后于查询end日期，则回退到每日文件，避免读到旧数据
+                if end and yr == end_yr:
+                    merged_max_date = _get_merged_max_date(data_dir, str(yr), date_col=date_col)
+                    if merged_max_date is None or merged_max_date < int(end):
+                        years_without_merged.append(yr)
+                        continue
                 years_with_merged.append(yr)
             else:
                 years_without_merged.append(yr)
@@ -266,6 +471,10 @@ def get_local_data(
 
         # 按日期过滤
         if not df_all.empty:
+            if date_col != 'trade_date' and date_col in df_all.columns:
+                df_all = df_all.rename(columns={date_col: 'trade_date'})
+            if code_col != 'ts_code' and code_col in df_all.columns:
+                df_all = df_all.rename(columns={code_col: 'ts_code'})
             if df_all['trade_date'].dtype == object:
                 df_all['trade_date'] = df_all['trade_date'].astype(int)
             if start:
@@ -273,21 +482,32 @@ def get_local_data(
             if end:
                 df_all = df_all[df_all['trade_date'] <= int(end)]
 
-    elif parallel and len(files_with_dates) > 10:
-        # 并行读取每日小文件
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            args_list = [(date, f, filed) for date, f in files_with_dates]
-            results = list(executor.map(_read_single_file, args_list))
-            dfs = [r for r in results if r is not None]
-        df_all = pd.concat(dfs, ignore_index=True)
     else:
-        # 串行读取
-        for date, f in files_with_dates:
-            table = pq.read_table(f, columns=['ts_code', filed])
-            df = table.to_pandas()
-            df['trade_date'] = date
-            dfs.append(df)
-        df_all = pd.concat(dfs, ignore_index=True)
+        # 仅在未命中年度合并优化路径时，才扫描日文件
+        files_with_dates = _find_data_files(data_dir, prefix, start, end)
+        if not files_with_dates:
+            return pd.DataFrame()
+
+        if parallel and len(files_with_dates) > 10:
+            # 并行读取每日小文件
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                args_list = [(date, f, filed, code_col) for date, f in files_with_dates]
+                results = list(executor.map(_read_single_file, args_list))
+                dfs = [r for r in results if r is not None]
+            df_all = pd.concat(dfs, ignore_index=True)
+        else:
+            # 串行读取
+            for date, f in files_with_dates:
+                table = pq.read_table(f, columns=[code_col, filed])
+                df = table.to_pandas()
+                if code_col != 'ts_code':
+                    df = df.rename(columns={code_col: 'ts_code'})
+                df['trade_date'] = date
+                dfs.append(df)
+            df_all = pd.concat(dfs, ignore_index=True)
+
+    if df_all.empty:
+        return pd.DataFrame()
 
     # 过滤股票
     if sec_list is not None and len(sec_list) > 0:
@@ -295,10 +515,16 @@ def get_local_data(
 
     # 过滤空值并去重
     df_all = df_all.dropna(subset=[filed])
+    if df_all.empty:
+        return pd.DataFrame()
     df_all = df_all.drop_duplicates(subset=['trade_date', 'ts_code'], keep='first')
 
     # 确保trade_date是有效整数
-    df_all = df_all[df_all['trade_date'].apply(lambda x: str(x).isdigit() if pd.notna(x) else False)]
+    trade_date_num = pd.to_numeric(df_all['trade_date'], errors='coerce')
+    df_all = df_all[trade_date_num.notna()].copy()
+    if df_all.empty:
+        return pd.DataFrame()
+    df_all['trade_date'] = trade_date_num.loc[df_all.index].astype(int)
 
     # 转为宽表
     df_pivot = df_all.pivot(index='trade_date', columns='ts_code', values=filed)
@@ -336,22 +562,12 @@ def list_data_files(
     Returns:
         List of (date, filepath) tuples
     """
+    if data_type not in DATA_TYPES:
+        raise ValueError(f"不支持的数据类型: {data_type}，支持: {DATA_TYPES}")
+
     if data_dir is None:
-        if data_type == 'daily':
-            data_dir = DAILY_DIR
-            prefix = 'daily'
-        elif data_type == 'daily_basic':
-            data_dir = DAILY_BASIC_DIR
-            prefix = 'daily_basic'
-        elif data_type == 'cashflow_daily':
-            data_dir = CASHFLOW_DAILY_DIR
-            prefix = 'cashflow_daily'
-        elif data_type == 'income_daily':
-            data_dir = INCOME_DAILY_DIR
-            prefix = 'income_daily'
-        else:
-            data_dir = BALANCE_DAILY_DIR
-            prefix = 'balance_daily'
+        data_dir = DATA_TYPE_META[data_type]['data_dir']
+        prefix = DATA_TYPE_META[data_type]['prefix']
     else:
         prefix = data_type
 
@@ -368,6 +584,22 @@ def list_data_files(
 def _get_full_file_path(data_dir: str, year: str) -> Path:
     """获取完整合并文件的路径"""
     return Path(data_dir) / f'{year}_full.parquet'
+
+def _get_full_max_date(data_dir: str, year: str, date_col: str = 'trade_date') -> Optional[int]:
+    """获取年度full文件中的最大trade_date，失败时返回None"""
+    full_file = _get_full_file_path(data_dir, year)
+    if not full_file.exists():
+        return None
+    try:
+        table = pq.read_table(full_file, columns=[date_col])
+        if table.num_rows == 0:
+            return None
+        arr = table.column(date_col).to_pandas()
+        if arr.empty:
+            return None
+        return int(pd.to_numeric(arr, errors='coerce').dropna().max())
+    except Exception:
+        return None
 
 
 def get_all_data(
@@ -398,7 +630,17 @@ def get_all_data(
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    # 定义各数据类型的可用字段
+    if data_type not in DATA_TYPES:
+        raise ValueError(f"未知数据类型: {data_type}")
+    sec_list = _normalize_sec_list(sec_list)
+
+    meta = DATA_TYPE_META[data_type]
+    data_dir = meta['data_dir']
+    code_col = meta['code_col']
+    date_col = meta['date_col']
+    prefix = meta['prefix']
+
+    # 定义各数据类型的可用字段（英文类型使用固定列表，中文类型自动推断）
     DATA_FIELDS = {
         'daily': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close',
                   'pre_close', 'change', 'pct_chg', 'vol', 'amount'],
@@ -416,27 +658,24 @@ def get_all_data(
     }
 
     # 确定要读取的字段
-    if data_type not in DATA_FIELDS:
-        raise ValueError(f"未知数据类型: {data_type}")
-    all_fields = DATA_FIELDS[data_type]
+    if data_type in DATA_FIELDS:
+        all_fields = DATA_FIELDS[data_type]
+    else:
+        all_fields = list_data_fields(
+            data_type=data_type,
+            data_dir=data_dir,
+            include_meta=True,
+            start=start,
+            end=end
+        )
+        if not all_fields:
+            return {}
 
     if fields is None:
-        fields = [f for f in all_fields if f not in ['ts_code', 'trade_date']]
+        fields = [f for f in all_fields if f not in [code_col, date_col]]
     else:
         # 验证字段
-        fields = [f for f in fields if f in all_fields and f not in ['ts_code', 'trade_date']]
-
-    # 确定数据目录
-    if data_type == 'daily':
-        data_dir = DAILY_DIR
-    elif data_type == 'daily_basic':
-        data_dir = DAILY_BASIC_DIR
-    elif data_type == 'cashflow_daily':
-        data_dir = CASHFLOW_DAILY_DIR
-    elif data_type == 'income_daily':
-        data_dir = INCOME_DAILY_DIR
-    else:
-        data_dir = BALANCE_DAILY_DIR
+        fields = [f for f in fields if f in all_fields and f not in [code_col, date_col]]
 
     # 确定年份范围
     start_year = start[:4] if start else None
@@ -454,6 +693,12 @@ def get_all_data(
     for yr in all_years:
         full_file = _get_full_file_path(data_dir, str(yr))
         if full_file.exists():
+            # 若结束年份full文件落后于查询end日期，则回退到每日文件，避免读到旧数据
+            if yr == end_yr:
+                full_max_date = _get_full_max_date(data_dir, str(yr), date_col=date_col)
+                if full_max_date is None or full_max_date < int(end):
+                    years_without_full.append(yr)
+                    continue
             years_with_full.append(yr)
         else:
             years_without_full.append(yr)
@@ -464,7 +709,12 @@ def get_all_data(
     def read_full_year(yr: int) -> pd.DataFrame:
         full_file = _get_full_file_path(data_dir, str(yr))
         if full_file.exists():
-            return pd.read_parquet(full_file, columns=all_fields)
+            return _read_merged_file(
+                merged_file=full_file,
+                columns=all_fields,
+                code_col=code_col,
+                sec_list=sec_list
+            )
         return None
 
     all_dfs = []
@@ -478,20 +728,31 @@ def get_all_data(
 
     # 处理没有full文件的年份（如果有的话）
     for yr in years_without_full:
-        year_files = _find_data_files(data_dir, data_type, f'{yr}0101', f'{yr}1231')
+        year_files = _find_data_files(data_dir, prefix, f'{yr}0101', f'{yr}1231')
         if year_files:
             dfs = []
             for date, f in year_files:
-                df = pd.read_parquet(f, columns=all_fields)
+                df = _read_merged_file(
+                    merged_file=Path(f),
+                    columns=all_fields,
+                    code_col=code_col,
+                    sec_list=sec_list
+                )
                 dfs.append(df)
             if dfs:
                 all_dfs.append(pd.concat(dfs, ignore_index=True))
 
     if not all_dfs:
+        if sec_list:
+            print("[提示] sec_list 与当前数据代码无匹配，请检查是否为 000001.SZ/600000.SH 格式")
         return {f: pd.DataFrame() for f in fields}
 
     # 合并所有年份
     df_all = pd.concat(all_dfs, ignore_index=True)
+    if date_col != 'trade_date' and date_col in df_all.columns:
+        df_all = df_all.rename(columns={date_col: 'trade_date'})
+    if code_col != 'ts_code' and code_col in df_all.columns:
+        df_all = df_all.rename(columns={code_col: 'ts_code'})
 
     # 按日期过滤
     start_int = int(start)
@@ -503,6 +764,8 @@ def get_all_data(
     # 过滤股票
     if sec_list:
         df_all = df_all[df_all['ts_code'].isin(sec_list)]
+        if df_all.empty:
+            print("[提示] sec_list 过滤后为空，请检查代码格式（大小写/空格/是否含 .SZ/.SH）")
 
     # 去重
     df_all = df_all.drop_duplicates(subset=['trade_date', 'ts_code'], keep='first')

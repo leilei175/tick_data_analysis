@@ -9,6 +9,12 @@ import sys
 import html
 import hashlib
 import re
+import json
+import uuid
+import time
+import shlex
+import threading
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -60,6 +66,65 @@ REPORT_DOC_DIRS = [
 
 factor_analyzer = None
 analysis_engine = None
+
+BACKTEST_DIR = BASE_DIR / "backtest"
+BACKTEST_RUNS_DIR = BACKTEST_DIR / "web_runs"
+BACKTEST_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+CUSTOM_BACKTEST_DIR = BACKTEST_DIR / "custom_scripts"
+CUSTOM_BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
+
+BACKTEST_COMMON_PARAMS = [
+    {"name": "start", "type": "str", "default": "20220101", "required": True, "label": "开始日期(YYYYMMDD)"},
+    {"name": "end", "type": "str", "default": "20221231", "required": True, "label": "结束日期(YYYYMMDD)"},
+    {"name": "daily_dir", "type": "str", "default": "daily_data/daily", "required": True, "label": "行情目录"},
+    {"name": "symbols", "type": "str", "default": "", "required": False, "label": "股票列表(逗号分隔)"},
+    {"name": "symbol_limit", "type": "int", "default": 50, "required": True, "label": "自动选股数量"},
+    {"name": "cash", "type": "float", "default": 1000000.0, "required": True, "label": "初始资金"},
+    {"name": "commission", "type": "float", "default": 0.001, "required": True, "label": "手续费率"},
+    {"name": "extra_args", "type": "str", "default": "", "required": False, "label": "额外命令行参数(可选)"},
+]
+
+BACKTEST_SCRIPT_CONFIG = {
+    "run_backtest.py": {
+        "label": "均线策略回测（EqualWeightSmaCross）",
+        "description": "多标的均线筛选，等权持仓。",
+        "script_path": BACKTEST_DIR / "run_backtest.py",
+        "default_output_subdir": "output",
+        "params": [
+            {"name": "start", "type": "str", "default": "20220101", "required": True, "label": "开始日期(YYYYMMDD)"},
+            {"name": "end", "type": "str", "default": "20221231", "required": True, "label": "结束日期(YYYYMMDD)"},
+            {"name": "daily_dir", "type": "str", "default": "daily_data/daily", "required": True, "label": "行情目录"},
+            {"name": "symbols", "type": "str", "default": "", "required": False, "label": "股票列表(逗号分隔)"},
+            {"name": "symbol_limit", "type": "int", "default": 20, "required": True, "label": "自动选股数量"},
+            {"name": "cash", "type": "float", "default": 1000000.0, "required": True, "label": "初始资金"},
+            {"name": "commission", "type": "float", "default": 0.001, "required": True, "label": "手续费率"},
+            {"name": "short_window", "type": "int", "default": 10, "required": True, "label": "短均线窗口"},
+            {"name": "long_window", "type": "int", "default": 30, "required": True, "label": "长均线窗口"},
+            {"name": "rebalance_days", "type": "int", "default": 5, "required": True, "label": "调仓频率(天)"},
+        ],
+    },
+    "run_factor_topn_demo.py": {
+        "label": "因子打分 TopN 调仓 Demo",
+        "description": "按过去N日收益率打分，截面选TopN等权调仓。",
+        "script_path": BACKTEST_DIR / "run_factor_topn_demo.py",
+        "default_output_subdir": "output_factor_topn",
+        "params": [
+            {"name": "start", "type": "str", "default": "20220101", "required": True, "label": "开始日期(YYYYMMDD)"},
+            {"name": "end", "type": "str", "default": "20221231", "required": True, "label": "结束日期(YYYYMMDD)"},
+            {"name": "daily_dir", "type": "str", "default": "daily_data/daily", "required": True, "label": "行情目录"},
+            {"name": "symbols", "type": "str", "default": "", "required": False, "label": "股票列表(逗号分隔)"},
+            {"name": "symbol_limit", "type": "int", "default": 50, "required": True, "label": "自动选股数量"},
+            {"name": "cash", "type": "float", "default": 1000000.0, "required": True, "label": "初始资金"},
+            {"name": "commission", "type": "float", "default": 0.001, "required": True, "label": "手续费率"},
+            {"name": "lookback", "type": "int", "default": 20, "required": True, "label": "因子回看窗口"},
+            {"name": "topn", "type": "int", "default": 10, "required": True, "label": "TopN持仓数"},
+            {"name": "rebalance_days", "type": "int", "default": 5, "required": True, "label": "调仓频率(天)"},
+        ],
+    },
+}
+
+_backtest_tasks: Dict[str, Dict] = {}
+_backtest_task_lock = threading.Lock()
 
 # ==================== 登录装饰器 ====================
 def login_required(f):
@@ -324,6 +389,264 @@ def _calc_quantile_result(merged: pd.DataFrame, period: int, quantiles: int) -> 
         })
     return result
 
+
+def _cast_param_value(raw_val, param_type: str):
+    if raw_val is None:
+        return None
+    if param_type == "int":
+        return int(raw_val)
+    if param_type == "float":
+        return float(raw_val)
+    return str(raw_val)
+
+
+def _task_meta_path(output_dir: Path) -> Path:
+    return output_dir / "task_meta.json"
+
+
+def _run_log_path(output_dir: Path) -> Path:
+    return output_dir / "run.log"
+
+
+def _save_task_meta(task: Dict):
+    try:
+        output_dir = Path(task["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "task_id": task.get("task_id"),
+            "script": task.get("script"),
+            "status": task.get("status"),
+            "message": task.get("message"),
+            "progress": task.get("progress"),
+            "params": task.get("params", {}),
+            "output_dir": task.get("output_dir"),
+            "created_at": task.get("created_at"),
+            "started_at": task.get("started_at"),
+            "finished_at": task.get("finished_at"),
+        }
+        _task_meta_path(output_dir).write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _load_task_meta(task_id: str) -> Optional[Dict]:
+    meta_path = _task_meta_path(BACKTEST_RUNS_DIR / task_id)
+    if not meta_path.exists():
+        return None
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _tail_lines(file_path: Path, max_lines: int = 100) -> List[str]:
+    if not file_path.exists():
+        return []
+    try:
+        lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        return lines[-max_lines:]
+    except Exception:
+        return []
+
+
+def _list_custom_backtest_scripts() -> List[str]:
+    files = []
+    for p in sorted(CUSTOM_BACKTEST_DIR.glob("*.py")):
+        if p.name.startswith("_"):
+            continue
+        files.append(p.name)
+    return files
+
+
+def _resolve_custom_script_path(script_name: str) -> Optional[Path]:
+    name = str(script_name).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.py", name):
+        return None
+    path = (CUSTOM_BACKTEST_DIR / name).resolve()
+    if path.parent != CUSTOM_BACKTEST_DIR.resolve():
+        return None
+    return path
+
+
+def _build_backtest_script_list() -> List[Dict]:
+    scripts: List[Dict] = []
+    for key, cfg in BACKTEST_SCRIPT_CONFIG.items():
+        scripts.append({
+            "script": key,
+            "label": cfg["label"],
+            "description": cfg["description"],
+            "params": cfg["params"],
+            "is_custom": False,
+        })
+    for name in _list_custom_backtest_scripts():
+        scripts.append({
+            "script": f"custom:{name}",
+            "label": f"自定义脚本: {name}",
+            "description": "用户自定义回测脚本（需支持通用命令行参数）",
+            "params": BACKTEST_COMMON_PARAMS,
+            "is_custom": True,
+        })
+    return scripts
+
+
+def _load_history_items(limit: int = 200) -> List[Dict]:
+    items = []
+    for run_dir in BACKTEST_RUNS_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+        task_id = run_dir.name
+        meta = _load_task_meta(task_id) or {}
+        metrics = {}
+        metrics_file = run_dir / "metrics.json"
+        if metrics_file.exists():
+            try:
+                metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+            except Exception:
+                metrics = {}
+        created_at = meta.get("created_at")
+        if not created_at:
+            created_at = datetime.fromtimestamp(run_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        items.append({
+            "task_id": task_id,
+            "script": meta.get("script", "unknown"),
+            "status": meta.get("status", "unknown"),
+            "created_at": created_at,
+            "finished_at": meta.get("finished_at"),
+            "final_value": metrics.get("final_value"),
+            "total_return": metrics.get("total_return"),
+            "result_url": f"/backtest/result/{task_id}",
+        })
+    items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return items[:limit]
+
+
+def _append_backtest_log(task_id: str, line: str, max_lines: int = 500):
+    log_file = None
+    with _backtest_task_lock:
+        task = _backtest_tasks.get(task_id)
+        if not task:
+            return
+        log_file = task.get("log_file")
+        task["logs"].append(line.rstrip("\n"))
+        if len(task["logs"]) > max_lines:
+            task["logs"] = task["logs"][-max_lines:]
+    if log_file:
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(line if line.endswith("\n") else line + "\n")
+        except Exception:
+            pass
+
+
+def _estimate_running_progress(start_ts: float) -> int:
+    elapsed = max(0.0, time.time() - start_ts)
+    # 以120秒为“典型耗时”估算进度，运行中封顶95%
+    p = int(min(95, 5 + elapsed / 120.0 * 90))
+    return max(5, p)
+
+
+def _load_backtest_result(output_dir: Path) -> Dict:
+    result = {
+        "metrics": {},
+        "equity_curve": [],
+        "rebalance_log": [],
+    }
+    metrics_file = output_dir / "metrics.json"
+    if metrics_file.exists():
+        try:
+            import json as _json
+            result["metrics"] = _json.loads(metrics_file.read_text(encoding="utf-8"))
+        except Exception:
+            result["metrics"] = {}
+
+    equity_file = output_dir / "equity_curve.csv"
+    if equity_file.exists():
+        try:
+            eq_df = pd.read_csv(equity_file)
+            if "datetime" in eq_df.columns:
+                eq_df = eq_df.rename(columns={"datetime": "date"})
+            if "date" not in eq_df.columns and len(eq_df.columns) >= 1:
+                eq_df = eq_df.rename(columns={eq_df.columns[0]: "date"})
+            if "nav" not in eq_df.columns and len(eq_df.columns) >= 2:
+                eq_df = eq_df.rename(columns={eq_df.columns[1]: "nav"})
+            result["equity_curve"] = eq_df[["date", "nav"]].to_dict(orient="records")
+        except Exception:
+            result["equity_curve"] = []
+
+    rebalance_file = output_dir / "rebalance_log.csv"
+    if rebalance_file.exists():
+        try:
+            rebalance_df = pd.read_csv(rebalance_file).head(200)
+            result["rebalance_log"] = rebalance_df.to_dict(orient="records")
+        except Exception:
+            result["rebalance_log"] = []
+    return result
+
+
+def _run_backtest_task(task_id: str):
+    with _backtest_task_lock:
+        task = _backtest_tasks.get(task_id)
+        if not task:
+            return
+        task["status"] = "running"
+        task["started_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        task["start_ts"] = time.time()
+        task["progress"] = 5
+        _save_task_meta(task)
+
+    try:
+        proc = subprocess.Popen(
+            task["cmd"],
+            cwd=str(BASE_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        with _backtest_task_lock:
+            task = _backtest_tasks.get(task_id)
+            if task is not None:
+                task["pid"] = proc.pid
+
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                _append_backtest_log(task_id, line)
+                with _backtest_task_lock:
+                    task = _backtest_tasks.get(task_id)
+                    if task is None:
+                        continue
+                    task["progress"] = _estimate_running_progress(task.get("start_ts", time.time()))
+
+        return_code = proc.wait()
+        with _backtest_task_lock:
+            task = _backtest_tasks.get(task_id)
+            if task is None:
+                return
+            if return_code == 0:
+                task["status"] = "success"
+                task["progress"] = 100
+                task["message"] = "回测完成"
+                task["result"] = _load_backtest_result(Path(task["output_dir"]))
+            else:
+                task["status"] = "error"
+                task["progress"] = 100
+                task["message"] = f"回测失败，退出码: {return_code}"
+            task["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _save_task_meta(task)
+    except Exception as e:
+        with _backtest_task_lock:
+            task = _backtest_tasks.get(task_id)
+            if task is None:
+                return
+            task["status"] = "error"
+            task["progress"] = 100
+            task["message"] = f"回测异常: {e}"
+            task["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _save_task_meta(task)
+
 # ==================== 路由 ====================
 
 @app.route('/')
@@ -366,6 +689,303 @@ def data_manager():
 def docs_center():
     """文档中心页面"""
     return render_template('docs_center.html', active_page='docs')
+
+
+@app.route('/backtest')
+def backtest_page():
+    """回测页面"""
+    return render_template('backtest.html', active_page='backtest')
+
+
+@app.route('/backtest/result/<task_id>')
+def backtest_result_page(task_id: str):
+    """回测结果页面"""
+    return render_template('backtest_result.html', active_page='backtest', task_id=task_id)
+
+
+@app.route('/api/backtest/scripts')
+def api_backtest_scripts():
+    """API: 获取可用回测脚本与参数定义"""
+    try:
+        scripts = _build_backtest_script_list()
+        return jsonify({"status": "success", "data": {"scripts": scripts}})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route('/api/backtest/run', methods=['POST'])
+def api_backtest_run():
+    """API: 启动回测任务"""
+    try:
+        payload = request.get_json() or {}
+        script_name = str(payload.get("script", "")).strip()
+        params = payload.get("params", {}) or {}
+
+        is_custom = script_name.startswith("custom:")
+        if is_custom:
+            custom_name = script_name.split("custom:", 1)[1].strip()
+            script_path = _resolve_custom_script_path(custom_name)
+            if script_path is None or not script_path.exists():
+                return jsonify({"status": "error", "message": f"自定义脚本不存在: {custom_name}"})
+            cfg = {
+                "label": f"自定义脚本: {custom_name}",
+                "params": BACKTEST_COMMON_PARAMS,
+                "allow_extra_args": True,
+            }
+        else:
+            if script_name not in BACKTEST_SCRIPT_CONFIG:
+                return jsonify({"status": "error", "message": f"不支持的脚本: {script_name}"})
+            cfg = BACKTEST_SCRIPT_CONFIG[script_name]
+            script_path = cfg["script_path"]
+            if not script_path.exists():
+                return jsonify({"status": "error", "message": f"脚本不存在: {script_path}"})
+
+        casted = {}
+        for p in cfg["params"]:
+            name = p["name"]
+            ptype = p["type"]
+            required = p.get("required", False)
+            default = p.get("default")
+            raw_val = params.get(name, default)
+            if required and (raw_val is None or str(raw_val).strip() == ""):
+                return jsonify({"status": "error", "message": f"缺少参数: {name}"})
+            if raw_val is None or (ptype == "str" and str(raw_val).strip() == ""):
+                casted[name] = "" if ptype == "str" else default
+                continue
+            try:
+                casted[name] = _cast_param_value(raw_val, ptype)
+            except Exception:
+                return jsonify({"status": "error", "message": f"参数类型错误: {name}"})
+
+        task_id = uuid.uuid4().hex[:12]
+        output_dir = BACKTEST_RUNS_DIR / task_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = [sys.executable, str(script_path)]
+        for p in cfg["params"]:
+            name = p["name"]
+            val = casted.get(name)
+            if name == "extra_args":
+                continue
+            if p["type"] == "str" and str(val).strip() == "":
+                continue
+            cmd.extend([f"--{name.replace('_', '-')}", str(val)])
+        if cfg.get("allow_extra_args"):
+            extra_args = str(casted.get("extra_args", "")).strip()
+            if extra_args:
+                cmd.extend(shlex.split(extra_args))
+        cmd.extend(["--output-dir", str(output_dir)])
+
+        task = {
+            "task_id": task_id,
+            "script": script_name,
+            "status": "queued",
+            "message": "任务排队中",
+            "progress": 0,
+            "params": casted,
+            "cmd": cmd,
+            "logs": [],
+            "result": None,
+            "pid": None,
+            "output_dir": str(output_dir),
+            "log_file": str(_run_log_path(output_dir)),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": None,
+            "finished_at": None,
+            "start_ts": None,
+        }
+        _run_log_path(output_dir).write_text("", encoding="utf-8")
+        with _backtest_task_lock:
+            _backtest_tasks[task_id] = task
+            _save_task_meta(task)
+
+        thread = threading.Thread(target=_run_backtest_task, args=(task_id,), daemon=True)
+        thread.start()
+
+        return jsonify({
+            "status": "success",
+            "message": "回测任务已启动",
+            "data": {
+                "task_id": task_id,
+                "status_url": url_for("api_backtest_task_status", task_id=task_id),
+                "result_url": url_for("backtest_result_page", task_id=task_id),
+            },
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route('/api/backtest/task/<task_id>')
+def api_backtest_task_status(task_id: str):
+    """API: 获取回测任务状态与日志"""
+    with _backtest_task_lock:
+        task = _backtest_tasks.get(task_id)
+        if task:
+            if task["status"] == "running" and task.get("start_ts"):
+                task["progress"] = _estimate_running_progress(task["start_ts"])
+            data = {
+                "task_id": task_id,
+                "script": task["script"],
+                "status": task["status"],
+                "message": task["message"],
+                "progress": task["progress"],
+                "created_at": task["created_at"],
+                "started_at": task["started_at"],
+                "finished_at": task["finished_at"],
+                "logs": task["logs"][-100:],
+                "params": task["params"],
+                "output_dir": task["output_dir"],
+            }
+            return jsonify({"status": "success", "data": data})
+
+    meta = _load_task_meta(task_id)
+    run_dir = BACKTEST_RUNS_DIR / task_id
+    if not meta and not run_dir.exists():
+        return jsonify({"status": "error", "message": "任务不存在"})
+    if not meta:
+        inferred_status = "success" if (run_dir / "metrics.json").exists() else "unknown"
+        meta = {
+            "task_id": task_id,
+            "script": "unknown",
+            "status": inferred_status,
+            "message": "从本地目录恢复",
+            "progress": 100 if inferred_status == "success" else 0,
+            "params": {},
+            "output_dir": str(run_dir),
+            "created_at": datetime.fromtimestamp(run_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": None,
+            "finished_at": None,
+        }
+    logs = _tail_lines(_run_log_path(Path(meta.get("output_dir", run_dir))), 100)
+    data = {
+        "task_id": task_id,
+        "script": meta.get("script"),
+        "status": meta.get("status", "unknown"),
+        "message": meta.get("message", ""),
+        "progress": int(meta.get("progress", 100 if meta.get("status") in ("success", "error") else 0)),
+        "created_at": meta.get("created_at"),
+        "started_at": meta.get("started_at"),
+        "finished_at": meta.get("finished_at"),
+        "logs": logs,
+        "params": meta.get("params", {}),
+        "output_dir": meta.get("output_dir"),
+    }
+    return jsonify({"status": "success", "data": data})
+
+
+@app.route('/api/backtest/result/<task_id>')
+def api_backtest_result(task_id: str):
+    """API: 获取回测结果详情"""
+    with _backtest_task_lock:
+        task = _backtest_tasks.get(task_id)
+        if task:
+            if task["status"] != "success":
+                return jsonify({"status": "error", "message": f"任务尚未完成，当前状态: {task['status']}"})
+            data = {
+                "task_id": task_id,
+                "script": task["script"],
+                "params": task["params"],
+                "created_at": task["created_at"],
+                "started_at": task["started_at"],
+                "finished_at": task["finished_at"],
+                "result": task.get("result") or {},
+                "logs": task["logs"][-200:],
+                "output_dir": task["output_dir"],
+            }
+            return jsonify({"status": "success", "data": data})
+
+    meta = _load_task_meta(task_id)
+    run_dir = BACKTEST_RUNS_DIR / task_id
+    if not meta and not run_dir.exists():
+        return jsonify({"status": "error", "message": "任务不存在"})
+    if not meta:
+        if not (run_dir / "metrics.json").exists():
+            return jsonify({"status": "error", "message": "任务尚未完成，且未找到结果文件"})
+        meta = {
+            "task_id": task_id,
+            "script": "unknown",
+            "status": "success",
+            "params": {},
+            "created_at": datetime.fromtimestamp(run_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": None,
+            "finished_at": None,
+            "output_dir": str(run_dir),
+        }
+    if meta.get("status") != "success":
+        return jsonify({"status": "error", "message": f"任务尚未完成，当前状态: {meta.get('status', 'unknown')}"})
+    output_dir = Path(meta.get("output_dir", run_dir))
+    data = {
+        "task_id": task_id,
+        "script": meta.get("script"),
+        "params": meta.get("params", {}),
+        "created_at": meta.get("created_at"),
+        "started_at": meta.get("started_at"),
+        "finished_at": meta.get("finished_at"),
+        "result": _load_backtest_result(output_dir),
+        "logs": _tail_lines(_run_log_path(output_dir), 200),
+        "output_dir": str(output_dir),
+    }
+    return jsonify({"status": "success", "data": data})
+
+
+@app.route('/api/backtest/history')
+def api_backtest_history():
+    """API: 获取历史回测结果列表"""
+    try:
+        limit = request.args.get("limit", default=200, type=int)
+        items = _load_history_items(limit=max(1, min(1000, limit)))
+        return jsonify({"status": "success", "data": {"items": items}})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route('/api/backtest/custom/list')
+def api_backtest_custom_list():
+    """API: 列出自定义回测脚本"""
+    try:
+        items = []
+        for name in _list_custom_backtest_scripts():
+            p = CUSTOM_BACKTEST_DIR / name
+            items.append({
+                "name": name,
+                "updated_at": datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "size_bytes": int(p.stat().st_size),
+            })
+        return jsonify({"status": "success", "data": {"scripts": items}})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route('/api/backtest/custom/content')
+def api_backtest_custom_content():
+    """API: 读取自定义回测脚本内容"""
+    try:
+        name = request.args.get("name", "").strip()
+        script_path = _resolve_custom_script_path(name)
+        if script_path is None or not script_path.exists():
+            return jsonify({"status": "error", "message": "脚本不存在"})
+        content = script_path.read_text(encoding="utf-8", errors="ignore")
+        return jsonify({"status": "success", "data": {"name": name, "content": content}})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route('/api/backtest/custom/save', methods=['POST'])
+def api_backtest_custom_save():
+    """API: 保存自定义回测脚本"""
+    try:
+        payload = request.get_json() or {}
+        name = str(payload.get("name", "")).strip()
+        content = str(payload.get("content", ""))
+        script_path = _resolve_custom_script_path(name)
+        if script_path is None:
+            return jsonify({"status": "error", "message": "脚本名称非法，仅支持 *.py"})
+        if not content.strip():
+            return jsonify({"status": "error", "message": "脚本内容不能为空"})
+        script_path.write_text(content, encoding="utf-8")
+        return jsonify({"status": "success", "message": "脚本已保存", "data": {"name": name}})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
 
 # ==================== 新版 API（按因子宽格式数据） ====================
 
@@ -1224,37 +1844,93 @@ def api_data_update_sync():
         data = request.get_json() or {}
         update_type = data.get('type', 'all')
         include_today = data.get('include_today', is_after_market_close())
+        valid_types = {'all', 'daily', 'daily_basic', 'financial'}
+
+        if update_type not in valid_types:
+            return jsonify({
+                'status': 'error',
+                'message': f'不支持的更新类型: {update_type}'
+            })
+
+        table_to_path = {
+            'daily': BASE_DIR / 'daily_data' / 'daily',
+            'daily_basic': BASE_DIR / 'daily_data' / 'daily_basic',
+            'cashflow_daily': BASE_DIR / 'daily_data' / 'cashflow_daily',
+            'income_daily': BASE_DIR / 'daily_data' / 'income_daily',
+            'balance_daily': BASE_DIR / 'daily_data' / 'balance_daily',
+        }
+        table_to_prefix = {
+            'daily': 'daily',
+            'daily_basic': 'daily_basic',
+            'cashflow_daily': 'cashflow_daily',
+            'income_daily': 'income_daily',
+            'balance_daily': 'balance_daily',
+        }
+
+        def _collect_existing_dates(table_name: str) -> set:
+            base_dir = table_to_path[table_name]
+            prefix = table_to_prefix[table_name]
+            dates = set()
+            if not base_dir.exists():
+                return dates
+            for file_path in base_dir.rglob(f'{prefix}_*.parquet'):
+                m = re.match(rf'^{prefix}_(\d{{8}})(?:_.*)?\.parquet$', file_path.name)
+                if m:
+                    dates.add(m.group(1))
+            return dates
 
         # 执行更新
         try:
             pro = init_tushare()
+            before_dates = {
+                name: _collect_existing_dates(name) for name in table_to_path.keys()
+            }
 
             # 确定更新范围
             latest_dates = get_all_latest_dates()
-            latest = latest_dates.get('daily', '20250101')
+            if update_type == 'daily':
+                latest = latest_dates.get('daily') or '20250101'
+            elif update_type == 'daily_basic':
+                latest = latest_dates.get('daily_basic') or '20250101'
+            else:
+                latest = max(
+                    latest_dates.get('daily') or '20250101',
+                    latest_dates.get('daily_basic') or '20250101'
+                )
 
-            # 获取需要更新的交易日
-            today = get_today_str()
-            trade_dates = pro.trade_cal(
-                exchange='SSE',
-                start_date=latest,
-                end_date=today,
-                is_open='1'
-            )['cal_date'].tolist()
+            trade_dates = []
+            if update_type in ('all', 'daily', 'daily_basic'):
+                # 获取需要更新的交易日
+                today = get_today_str()
+                trade_dates = pro.trade_cal(
+                    exchange='SSE',
+                    start_date=latest,
+                    end_date=today,
+                    is_open='1'
+                )['cal_date'].tolist()
+                # Tushare 返回顺序不稳定，这里统一升序，确保后续截取的是最近交易日
+                trade_dates = sorted(set(trade_dates))
 
-            if not trade_dates:
-                return jsonify({
-                    'status': 'success',
-                    'message': '没有需要更新的交易日',
-                    'data': {'updated_count': 0}
-                })
+                if not trade_dates:
+                    return jsonify({
+                        'status': 'success',
+                        'message': '没有需要更新的交易日',
+                        'data': {'updated_count': 0}
+                    })
 
-            # 如果不包含今天，过滤掉
-            if not include_today and not is_after_market_close():
-                trade_dates = [d for d in trade_dates if d != today]
+                # 如果不包含今天，过滤掉
+                if not include_today and not is_after_market_close():
+                    trade_dates = [d for d in trade_dates if d != today]
 
-            # 限制为最新5个交易日
-            trade_dates = trade_dates[-5:]
+                if not trade_dates:
+                    return jsonify({
+                        'status': 'success',
+                        'message': '没有需要更新的交易日',
+                        'data': {'updated_count': 0}
+                    })
+
+                # 限制为最新5个交易日
+                trade_dates = trade_dates[-5:]
 
             updated_count = 0
 
@@ -1266,13 +1942,46 @@ def api_data_update_sync():
                 from update_data import download_daily_basic_data
                 download_daily_basic_data(pro, trade_dates[0], trade_dates[-1])
 
+            if update_type == 'financial':
+                update_financial_data()
+
+            after_dates = {
+                name: _collect_existing_dates(name) for name in table_to_path.keys()
+            }
+
+            updated_details = {}
+            for name in table_to_path.keys():
+                updated_details[name] = sorted(after_dates[name] - before_dates[name])
+
+            if update_type == 'daily':
+                updated_count = len(updated_details['daily'])
+            elif update_type == 'daily_basic':
+                updated_count = len(updated_details['daily_basic'])
+            elif update_type == 'financial':
+                updated_count = (
+                    len(updated_details['cashflow_daily']) +
+                    len(updated_details['income_daily']) +
+                    len(updated_details['balance_daily'])
+                )
+            else:
+                updated_count = (
+                    len(updated_details['daily']) +
+                    len(updated_details['daily_basic'])
+                )
+
+            if updated_count > 0:
+                message = f'数据更新完成，新增 {updated_count} 个数据文件'
+            else:
+                message = f'更新完成，无新增数据（检查了 {len(trade_dates)} 个交易日）'
+
             return jsonify({
                 'status': 'success',
-                'message': f'数据更新完成，更新了 {len(trade_dates)} 个交易日',
+                'message': message,
                 'data': {
-                    'updated_count': len(trade_dates),
+                    'updated_count': updated_count,
                     'trade_dates': trade_dates,
-                    'update_type': update_type
+                    'update_type': update_type,
+                    'updated_details': updated_details
                 }
             })
         except Exception as e:
@@ -1299,6 +2008,73 @@ def api_data_refresh():
         })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/data/high-frequency/compute', methods=['POST'])
+def api_high_frequency_compute():
+    """API: 根据tick原始数据计算并保存单日高频因子"""
+    try:
+        data = request.get_json() or {}
+        date_raw = str(data.get('date', '')).strip()
+        stock_code = data.get('stock_code', 'all')
+
+        if not date_raw:
+            return jsonify({'status': 'error', 'message': '请提供日期'})
+
+        date_digits = date_raw.replace('-', '').replace('/', '')
+        if not re.fullmatch(r'\d{8}', date_digits):
+            return jsonify({'status': 'error', 'message': '日期格式错误，支持 YYYYMMDD 或 YYYY-MM-DD'})
+
+        date_norm = f"{date_digits[:4]}-{date_digits[4:6]}-{date_digits[6:8]}"
+        tick_base_dir = BASE_DIR / 'tick_2026'
+        tick_day_dir = tick_base_dir / date_digits[:4] / date_digits[4:6] / date_digits[6:8]
+
+        if not tick_day_dir.exists():
+            return jsonify({
+                'status': 'error',
+                'message': f'tick数据目录不存在: {tick_day_dir}'
+            })
+
+        tick_files = list(tick_day_dir.glob('*.parquet'))
+        if not tick_files:
+            return jsonify({
+                'status': 'error',
+                'message': f'当天无tick数据文件: {tick_day_dir}'
+            })
+
+        output_dir = BASE_DIR / 'factor' / 'high_frequency'
+
+        from time import perf_counter
+        start_ts = perf_counter()
+
+        from high_frequency_factors import calc_high_frequency, FACTORS
+        result_df = calc_high_frequency(
+            date=date_norm,
+            stock_code=stock_code,
+            base_dir=str(tick_base_dir),
+            output_dir=str(output_dir)
+        )
+
+        elapsed_sec = round(perf_counter() - start_ts, 2)
+        output_file = output_dir / f"{date_digits[:4]}_{date_digits[4:6]}_{date_digits[6:8]}.parquet"
+        factor_cols = [f for f in FACTORS if f in result_df.columns]
+
+        return jsonify({
+            'status': 'success',
+            'message': f'高频因子计算完成: {date_norm}',
+            'data': {
+                'date': date_norm,
+                'tick_dir': str(tick_day_dir),
+                'tick_file_count': len(tick_files),
+                'stock_count': int(len(result_df)),
+                'factor_count': len(factor_cols),
+                'factors': factor_cols,
+                'output_file': str(output_file),
+                'elapsed_sec': elapsed_sec
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'高频因子计算失败: {str(e)}'})
 
 # ==================== 登录路由 ====================
 

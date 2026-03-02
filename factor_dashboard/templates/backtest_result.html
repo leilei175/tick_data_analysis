@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}回测结果 - 量化研究中台{% endblock %}
+{% block header_title %}回测结果{% endblock %}
+
+{% block content %}
+<div class="content-section">
+    <div class="card-header">
+        <div>
+            <h2 class="card-title">任务结果详情</h2>
+            <p class="card-subtitle">任务ID: <span id="taskIdText">{{ task_id }}</span></p>
+        </div>
+        <div style="display:flex; gap:8px;">
+            <a class="btn" href="{{ url_for('backtest_page') }}">返回回测中心</a>
+            <button class="btn btn-primary" onclick="loadResult()">刷新结果</button>
+        </div>
+    </div>
+
+    <div class="stats-grid" id="metricsGrid" style="margin-bottom: 16px;"></div>
+
+    <div class="section-card" style="margin-bottom: 16px;">
+        <div class="section-header">
+            <span class="section-title">净值曲线</span>
+        </div>
+        <div id="equityChart" style="height: 360px; padding: 10px;"></div>
+    </div>
+
+    <div class="section-card" style="margin-bottom: 16px;">
+        <div class="section-header">
+            <span class="section-title">调仓记录（最多 200 行）</span>
+        </div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>日期</th>
+                        <th>入选数量</th>
+                        <th>入选标的</th>
+                    </tr>
+                </thead>
+                <tbody id="rebalanceBody">
+                    <tr><td colspan="3" style="text-align:center; color:var(--text-muted);">暂无调仓数据</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="section-card">
+        <div class="section-header">
+            <span class="section-title">运行日志</span>
+        </div>
+        <div id="logBox" style="height: 220px; overflow-y: auto; border-top: 1px solid var(--border-color); background: var(--bg-tertiary); padding: 10px; font-family: 'JetBrains Mono', monospace; font-size: 12px;"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const taskId = '{{ task_id }}';
+
+function renderMetrics(metrics) {
+    const container = document.getElementById('metricsGrid');
+    const labelMap = {
+        initial_cash: '初始资金',
+        final_value: '最终资产',
+        total_return: '总收益率',
+        annual_return: '年化收益率',
+        annual_volatility: '年化波动率',
+        downside_volatility: '下行波动率',
+        sharpe: '夏普比率',
+        sortino: '索提诺比率',
+        calmar: '卡玛比率',
+        max_drawdown_pct: '最大回撤(%)',
+        max_drawdown_duration_days: '最大回撤持续天数',
+        win_rate: '胜率',
+        loss_rate: '亏损率',
+        payoff_ratio: '盈亏比',
+        profit_factor: '盈利因子',
+        var_95_daily: '日VaR(95%)',
+        cvar_95_daily: '日CVaR(95%)',
+        omega_ratio: 'Omega比率',
+        alpha: 'Alpha',
+        beta: 'Beta',
+        tracking_error: '跟踪误差',
+        information_ratio: '信息比率',
+        treynor_ratio: '特雷诺比率',
+        up_capture_ratio: '上行捕获比',
+        down_capture_ratio: '下行捕获比',
+        correlation_with_benchmark: '与基准相关系数',
+        benchmark_total_return: '基准总收益率',
+        benchmark_annual_return: '基准年化收益率',
+        symbols_count: '标的数量',
+        observations: '样本天数'
+    };
+    const pctKeys = new Set([
+        'total_return', 'annual_return', 'annual_volatility', 'downside_volatility',
+        'win_rate', 'loss_rate', 'var_95_daily', 'cvar_95_daily',
+        'benchmark_total_return', 'benchmark_annual_return',
+        'avg_win_daily_return', 'avg_loss_daily_return', 'best_day_return', 'worst_day_return'
+    ]);
+    const moneyKeys = new Set(['initial_cash', 'final_value']);
+
+    function formatValue(key, val) {
+        if (val === null || val === undefined) return '-';
+        if (typeof val === 'number') {
+            if (moneyKeys.has(key)) return val.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+            if (pctKeys.has(key)) return `${(val * 100).toFixed(2)}%`;
+            return Number.isInteger(val) ? String(val) : val.toFixed(6);
+        }
+        return String(val);
+    }
+
+    const entries = Object.entries(metrics || {});
+    if (!entries.length) {
+        container.innerHTML = '<div style="color: var(--text-muted);">无指标数据</div>';
+        return;
+    }
+
+    container.innerHTML = entries.map(([k, v]) => `
+        <div class="stat-card">
+            <div class="stat-label">${labelMap[k] || k}</div>
+            <div class="stat-value" style="font-size: 18px;">${formatValue(k, v)}</div>
+        </div>
+    `).join('');
+}
+
+function renderEquity(equity) {
+    if (!equity || !equity.length) {
+        document.getElementById('equityChart').innerHTML = '<div style="padding:20px;color:var(--text-muted);">无净值数据</div>';
+        return;
+    }
+    const x = equity.map(i => i.date);
+    const y = equity.map(i => i.nav);
+    Plotly.newPlot('equityChart', [{
+        type: 'scatter',
+        mode: 'lines',
+        x, y,
+        line: { color: '#22c55e', width: 2 }
+    }], {
+        ...getPlotlyTheme(),
+        margin: { l: 50, r: 30, t: 20, b: 40 },
+        xaxis: { title: '日期' },
+        yaxis: { title: '净值' }
+    }, { responsive: true, displayModeBar: false });
+}
+
+function renderRebalance(rows) {
+    const body = document.getElementById('rebalanceBody');
+    if (!rows || !rows.length) {
+        body.innerHTML = '<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">暂无调仓数据</td></tr>';
+        return;
+    }
+    body.innerHTML = rows.map(r => `
+        <tr>
+            <td>${r.date || '-'}</td>
+            <td>${r.selected_count ?? '-'}</td>
+            <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${r.selected_symbols || '-'}</td>
+        </tr>
+    `).join('');
+}
+
+function renderLogs(logs) {
+    const box = document.getElementById('logBox');
+    if (!logs || !logs.length) {
+        box.innerHTML = '<div style="color: var(--text-muted);">无日志</div>';
+        return;
+    }
+    box.innerHTML = logs.map(line => `<div>${line}</div>`).join('');
+    box.scrollTop = box.scrollHeight;
+}
+
+async function loadResult() {
+    const resp = await apiRequest(`/api/backtest/result/${taskId}`);
+    if (resp.status !== 'success') {
+        alert(resp.message || '加载结果失败');
+        return;
+    }
+    const data = resp.data;
+    const result = data.result || {};
+    renderMetrics(result.metrics || {});
+    renderEquity(result.equity_curve || []);
+    renderRebalance(result.rebalance_log || []);
+    renderLogs(data.logs || []);
+}
+
+document.addEventListener('DOMContentLoaded', loadResult);
+</script>
+{% endblock %}

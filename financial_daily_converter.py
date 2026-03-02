@@ -58,6 +58,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from mylib.date_utils import parse_date as _parse_date
 from mylib.date_utils import date_to_str as _date_to_str
+from mylib.tushare_client import init_tushare as _init_tushare
 
 # =============================================================================
 # 配置
@@ -512,6 +513,212 @@ def update_to_latest_quarter(
         updated += 1
 
     print(f"更新完成: {updated} 天")
+
+
+def _get_trading_days_from_tushare(
+    start_date: str,
+    end_date: str,
+    config_path: str = './config.py'
+) -> List[str]:
+    """从 Tushare 获取交易日列表，失败时回退到工作日。"""
+    try:
+        pro = _init_tushare(config_path=config_path)
+        trade_cal = pro.trade_cal(
+            exchange='SSE',
+            start_date=start_date,
+            end_date=end_date,
+            is_open='1'
+        )
+        if trade_cal is not None and not trade_cal.empty:
+            return sorted(trade_cal['cal_date'].astype(str).tolist())
+    except Exception as e:
+        print(f"警告: 获取交易日失败，回退工作日历: {e}")
+
+    start = parse_date(start_date)
+    end = parse_date(end_date)
+    dates = []
+    current = start
+    while current <= end:
+        if current.weekday() < 5:
+            dates.append(date_to_str(current))
+        current += timedelta(days=1)
+    return dates
+
+
+def convert_table_to_daily_by_disclosure(
+    table_name: str,
+    start_date: str,
+    end_date: str,
+    data_dir: str,
+    output_dir: str,
+    *,
+    source_file: Optional[str] = None,
+    overwrite: bool = True,
+    use_trading_days: bool = True
+) -> int:
+    """
+    根据财报披露日期(优先f_ann_date,其次ann_date)生成每日财务数据并保存。
+
+    输出文件命名:
+    - cashflow_daily_YYYYMMDD.parquet
+    - income_daily_YYYYMMDD.parquet
+    - balance_daily_YYYYMMDD.parquet
+    """
+    prefix = f'{table_name}_daily'
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    if source_file is None:
+        source_file = str(Path(data_dir) / f'{table_name}_all.parquet')
+    source_path = Path(source_file)
+    if not source_path.exists():
+        raise FileNotFoundError(f"未找到季度全量文件: {source_path}")
+
+    print(f"\n{'='*70}")
+    print(f"按披露日期转换 {table_name}: {start_date} ~ {end_date}")
+    print(f"来源: {source_path}")
+    print(f"输出: {output_path}")
+    print(f"{'='*70}")
+
+    df = pq.read_table(source_path).to_pandas()
+    if df.empty:
+        print("来源数据为空，跳过")
+        return 0
+
+    required_cols = {'ts_code', 'end_date'}
+    if not required_cols.issubset(set(df.columns)):
+        raise ValueError(f"{table_name} 缺少必要字段: {required_cols - set(df.columns)}")
+
+    # 选择披露日期: 优先实际披露日期f_ann_date，其次ann_date
+    if 'f_ann_date' in df.columns:
+        disclosure = df['f_ann_date'].astype(str)
+    else:
+        disclosure = pd.Series([''] * len(df))
+    if 'ann_date' in df.columns:
+        ann = df['ann_date'].astype(str)
+    else:
+        ann = pd.Series([''] * len(df))
+
+    disclosure = disclosure.where(disclosure.str.fullmatch(r'\d{8}'), ann)
+    disclosure = disclosure.where(disclosure.str.fullmatch(r'\d{8}'))
+    df['disclosure_date'] = disclosure
+    df['end_date'] = df['end_date'].astype(str)
+
+    # 过滤无效与区间外数据
+    df = df[df['disclosure_date'].notna()].copy()
+    df = df[(df['end_date'] >= '20100101') & (df['end_date'] <= end_date)]
+    df = df[(df['disclosure_date'] >= '20100101') & (df['disclosure_date'] <= end_date)]
+    df['disclosure_date_int'] = df['disclosure_date'].astype(int)
+    if df.empty:
+        print("有效披露数据为空，跳过")
+        return 0
+
+    # 同一股票同一披露日，保留报告期更晚的一条
+    df = df.sort_values(['ts_code', 'disclosure_date', 'end_date'])
+    df = df.drop_duplicates(subset=['ts_code', 'disclosure_date'], keep='last')
+
+    # 输出列: ts_code, trade_date + 其他值列（排除原始日期/元字段）
+    value_cols = [
+        c for c in df.columns
+        if c not in EXCLUDE_COLUMNS + ['disclosure_date', 'disclosure_date_int', 'ts_code', 'trade_date']
+    ]
+    keep_cols = ['ts_code', 'disclosure_date', 'disclosure_date_int'] + value_cols
+    df = df[keep_cols].copy()
+
+    if use_trading_days:
+        all_days = _get_trading_days_from_tushare(start_date, end_date)
+    else:
+        all_days = get_date_list(start_date, end_date)
+    if not all_days:
+        print("日期列表为空，跳过")
+        return 0
+
+    # 逐年处理，降低内存峰值
+    years = sorted({d[:4] for d in all_days})
+    saved_files = 0
+
+    for year in years:
+        year_days = [d for d in all_days if d.startswith(year)]
+        if not year_days:
+            continue
+
+        print(f"处理年份 {year}: {len(year_days)} 天")
+        ts_codes = df['ts_code'].dropna().astype(str).unique()
+        if len(ts_codes) == 0:
+            continue
+
+        # 构造当年全股票面板（trade_date x ts_code）
+        left = pd.DataFrame({
+            'trade_date': year_days * len(ts_codes),
+            'ts_code': [code for code in ts_codes for _ in year_days]
+        })
+        left['trade_date_int'] = left['trade_date'].astype(int)
+
+        right = df.sort_values(['disclosure_date_int', 'ts_code']).copy()
+        left = left.sort_values(['trade_date_int', 'ts_code']).copy()
+
+        year_panel = pd.merge_asof(
+            left,
+            right,
+            left_on='trade_date_int',
+            right_on='disclosure_date_int',
+            by='ts_code',
+            direction='backward'
+        )
+        year_panel = year_panel[year_panel['disclosure_date'].notna()].copy()
+        if year_panel.empty:
+            continue
+
+        # 分日保存
+        for trade_date, ddf in year_panel.groupby('trade_date', sort=True):
+            out_file = output_path / f'{prefix}_{trade_date}.parquet'
+            if out_file.exists() and not overwrite:
+                continue
+            # 去掉中间字段 disclosure_date，仅保留日频财报快照
+            ddf = ddf.drop(columns=['disclosure_date', 'disclosure_date_int', 'trade_date_int'], errors='ignore')
+            # 保证列顺序
+            ordered = ['ts_code', 'trade_date'] + [c for c in value_cols if c not in ['ts_code']]
+            ddf = ddf[[c for c in ordered if c in ddf.columns]]
+            pq.write_table(pa.Table.from_pandas(ddf, preserve_index=False), str(out_file))
+            saved_files += 1
+
+    print(f"完成 {table_name}: 生成 {saved_files} 个每日文件")
+    return saved_files
+
+
+def convert_financial_daily_by_disclosure(
+    start_date: str = '20150101',
+    end_date: str = '20251231',
+    tables: Optional[List[str]] = None,
+    overwrite: bool = True
+) -> Dict[str, int]:
+    """批量按披露日期生成日频财务数据。"""
+    if tables is None:
+        tables = ['cashflow', 'income', 'balance']
+
+    table_config = {
+        'cashflow': (CASHFLOW_DIR, CASHFLOW_DAILY_DIR),
+        'income': (INCOME_DIR, INCOME_DAILY_DIR),
+        'balance': (BALANCE_DIR, BALANCE_DAILY_DIR),
+    }
+
+    results: Dict[str, int] = {}
+    for table in tables:
+        if table not in table_config:
+            print(f"跳过未知表: {table}")
+            continue
+        data_dir, out_dir = table_config[table]
+        count = convert_table_to_daily_by_disclosure(
+            table_name=table,
+            start_date=start_date,
+            end_date=end_date,
+            data_dir=data_dir,
+            output_dir=out_dir,
+            overwrite=overwrite,
+            use_trading_days=True
+        )
+        results[table] = count
+    return results
 
 
 # =============================================================================

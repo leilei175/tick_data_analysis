@@ -132,6 +132,38 @@
         </div>
     </div>
 
+    <!-- 高频因子管理 -->
+    <div class="section-card" style="margin-top: 16px;">
+        <div class="section-header">
+            <span class="section-title">高频因子管理</span>
+            <span style="font-size: 12px; color: var(--text-muted);">从 tick_2026 原始tick数据计算并保存单日因子</span>
+        </div>
+        <div style="padding: 14px;">
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px;">
+                <label for="hfDateInput" style="font-size: 12px; color: var(--text-muted);">交易日期</label>
+                <input id="hfDateInput" type="date" class="search-input" style="max-width: 200px; padding: 8px 10px;">
+                <button class="btn btn-primary" onclick="computeHighFrequencyFactors()">
+                    计算并保存高频因子
+                </button>
+            </div>
+            <div style="font-size: 12px; color: var(--text-muted); line-height: 1.7;">
+                <div>tick目录: <span style="font-family:'JetBrains Mono',monospace;">tick_2026/YYYY/MM/DD</span></div>
+                <div>输出目录: <span style="font-family:'JetBrains Mono',monospace;">factor/high_frequency/YYYY_MM_DD.parquet</span></div>
+            </div>
+            <div id="hfComputeResult" style="
+                margin-top: 10px;
+                background: var(--bg-tertiary);
+                border: 1px solid var(--border-color);
+                border-radius: var(--radius-md);
+                padding: 10px;
+                font-size: 12px;
+                color: var(--text-secondary);
+            ">
+                <div style="color: var(--text-muted);">等待执行高频因子计算...</div>
+            </div>
+        </div>
+    </div>
+
     <!-- 日志输出 -->
     <div class="section-card" style="margin-top: 16px;">
         <div class="section-header">
@@ -372,7 +404,18 @@ const FIELD_TYPES = {
 document.addEventListener('DOMContentLoaded', function() {
     refreshDataStatus();
     updateModalTime();
+    initHighFrequencyDate();
 });
+
+function initHighFrequencyDate() {
+    const input = document.getElementById('hfDateInput');
+    if (!input) return;
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    input.value = `${yyyy}-${mm}-${dd}`;
+}
 
 function updateModalTime() {
     const now = new Date();
@@ -470,6 +513,59 @@ function closeFieldsSection() {
     document.getElementById('fieldsSection').style.display = 'none';
 }
 
+function computeHighFrequencyFactors() {
+    const dateInput = document.getElementById('hfDateInput');
+    const resultBox = document.getElementById('hfComputeResult');
+    const dateValue = (dateInput && dateInput.value) ? dateInput.value : '';
+
+    if (!dateValue) {
+        addLog('error', '请先选择高频因子计算日期');
+        return;
+    }
+
+    addLog('info', `开始计算高频因子: ${dateValue}`);
+    resultBox.innerHTML = '<div style="color: var(--accent-info);">正在计算，请稍候...</div>';
+
+    fetch('/api/data/high-frequency/compute', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            date: dateValue,
+            stock_code: 'all'
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status !== 'success') {
+            addLog('error', data.message || '高频因子计算失败');
+            resultBox.innerHTML = `<div style="color: var(--accent-danger);">${data.message || '高频因子计算失败'}</div>`;
+            return;
+        }
+
+        const info = data.data || {};
+        addLog('success', data.message || '高频因子计算完成');
+        addLog('info', `高频因子日期: ${info.date || '-'}`);
+        addLog('info', `tick文件数: ${info.tick_file_count || 0}, 股票数: ${info.stock_count || 0}, 因子数: ${info.factor_count || 0}`);
+        addLog('info', `保存文件: ${info.output_file || '-'}`);
+        addLog('info', `耗时: ${info.elapsed_sec || 0} 秒`);
+
+        resultBox.innerHTML = `
+            <div><strong>计算日期:</strong> ${info.date || '-'}</div>
+            <div><strong>tick文件数:</strong> ${info.tick_file_count || 0}</div>
+            <div><strong>股票数:</strong> ${info.stock_count || 0}</div>
+            <div><strong>因子数:</strong> ${info.factor_count || 0}</div>
+            <div><strong>耗时:</strong> ${info.elapsed_sec || 0} 秒</div>
+            <div style="word-break: break-all;"><strong>输出文件:</strong> ${info.output_file || '-'}</div>
+        `;
+    })
+    .catch(error => {
+        addLog('error', '高频因子计算失败: ' + error.message);
+        resultBox.innerHTML = `<div style="color: var(--accent-danger);">高频因子计算失败: ${error.message}</div>`;
+    });
+}
+
 function formatDate(dateStr) {
     if (!dateStr) return '-';
     return `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`;
@@ -487,9 +583,14 @@ function closeUpdateModal() {
 function updateTable(tableId) {
     addLog('info', `开始更新 ${tableId}...`);
 
-    const formData = new URLSearchParams();
-    formData.append('type', tableId.replace('_daily', ''));
-    formData.append('include_today', document.getElementById('includeToday').checked);
+    const tableTypeMap = {
+        'daily': 'daily',
+        'daily_basic': 'daily_basic',
+        'cashflow_daily': 'financial',
+        'income_daily': 'financial',
+        'balance_daily': 'financial'
+    };
+    const updateType = tableTypeMap[tableId] || 'all';
 
     fetch('/api/data/update/sync', {
         method: 'POST',
@@ -497,14 +598,14 @@ function updateTable(tableId) {
             'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-            type: tableId.replace('_daily', '').replace('daily', 'all'),
+            type: updateType,
             include_today: document.getElementById('includeToday').checked
         })
     })
     .then(response => response.json())
     .then(data => {
         if (data.status === 'success') {
-            addLog('success', data.message);
+            logUpdateDetails(data);
             refreshDataStatus();
         } else {
             addLog('error', data.message);
@@ -549,7 +650,7 @@ function executeUpdate() {
     .then(response => response.json())
     .then(data => {
         if (data.status === 'success') {
-            addLog('success', data.message);
+            logUpdateDetails(data);
             refreshDataStatus();
         } else {
             addLog('error', data.message);
@@ -572,6 +673,34 @@ function addLog(type, message) {
     const logEntry = document.createElement('div');
     logEntry.innerHTML = `<span style="color: var(--text-muted);">[${time}]</span> <span style="color: ${color};">${message}</span>`;
     logOutput.insertBefore(logEntry, logOutput.firstChild);
+}
+
+function logUpdateDetails(resp) {
+    addLog('success', resp.message || '更新完成');
+
+    const payload = (resp && resp.data) ? resp.data : {};
+    const updateType = payload.update_type || '-';
+    const updatedCount = payload.updated_count ?? '-';
+    addLog('info', `更新类型: ${updateType}`);
+    addLog('info', `新增文件数: ${updatedCount}`);
+
+    if (Array.isArray(payload.trade_dates) && payload.trade_dates.length > 0) {
+        addLog('info', `检查交易日: ${payload.trade_dates.join(', ')}`);
+    }
+
+    const details = payload.updated_details || {};
+    let hasDetail = false;
+    Object.keys(details).forEach((tableName) => {
+        const dates = details[tableName];
+        if (Array.isArray(dates) && dates.length > 0) {
+            hasDetail = true;
+            addLog('success', `${tableName} 新增日期: ${dates.join(', ')}`);
+        }
+    });
+
+    if (!hasDetail) {
+        addLog('info', '未发现新增文件，可能已是最新数据');
+    }
 }
 
 function clearLogs() {
