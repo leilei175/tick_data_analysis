@@ -21,6 +21,8 @@
 ## 因子与分析
 
 - [高频因子使用文档](./high_frequency_使用文档.md)
+- [可转债集合竞价成交额因子（日更）](./kzz_call_auction_factor_guide.md)
+- [高频因子定时更新方案（18:30）](./hf_factor_scheduler_guide.md)
 - [中证1000高频因子分析说明](./FACTOR_ANALYSIS.md)
 - [基本面因子分析报告](./fundamental_factor_analysis_report.md)
 - [基本面因子分析报告 V2](./fundamental_factor_analysis_report_v2.md)
@@ -28,7 +30,8 @@
 
 ## 工具与开发说明
 
+- [Flask 服务启动与开机自启](./flask_service_guide.md)
 - [get_local_data 说明](./README_get_local_data.md)
+- [get_remote_data 说明](./README_get_remote_data.md)
 - [代码冗余分析报告](./code_redundancy_analysis_report.md)
 - [重构总结](./refactoring_summary.md)
-

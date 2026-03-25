@@ -56,7 +56,7 @@ import pyarrow.parquet as pq
 # 导入通用模块
 from mylib.tushare_client import init_tushare as _init_tushare
 from mylib.tushare_client import get_trading_days
-from mylib.constants import DAILY_FIELDS, DAILY_BASIC_FIELDS
+from mylib.constants import DAILY_FIELDS, DAILY_BASIC_FIELDS, KZZ_DAILY_FIELDS
 from mylib.date_utils import parse_date as _parse_date
 from mylib.date_utils import date_to_str as _date_to_str
 
@@ -71,6 +71,7 @@ DEFAULT_DATA_DIR = os.path.join(_SCRIPT_DIR, 'daily_data')
 # 数据目录配置
 DATA_DIRS = {
     'daily': os.path.join(DEFAULT_DATA_DIR, 'daily/'),
+    'kzz_daily': os.path.join(DEFAULT_DATA_DIR, 'kzz_daily/'),
     'daily_basic': os.path.join(DEFAULT_DATA_DIR, 'daily_basic/'),
     'cashflow_daily': os.path.join(DEFAULT_DATA_DIR, 'cashflow_daily/'),
     'income_daily': os.path.join(DEFAULT_DATA_DIR, 'income_daily/'),
@@ -261,12 +262,13 @@ def download_daily_data(
         pd.DataFrame: 下载的数据
     """
     output_dir = output_dir or DATA_DIRS['daily']
+    requested_trade_dates = get_trade_dates(pro, start_date, end_date)
     print(f"\n{'='*60}")
     print(f"下载日线数据: {start_date} ~ {end_date}")
     print(f"{'='*60}")
 
     # 获取交易日列表
-    trade_dates = get_trade_dates(pro, start_date, end_date)
+    trade_dates = list(requested_trade_dates)
     print(f"交易日数量: {len(trade_dates)}")
 
     if not trade_dates:
@@ -291,6 +293,7 @@ def download_daily_data(
 
     if not trade_dates:
         print("所有日期的数据已存在")
+        rebuild_market_daily_yearly_files(years=sorted({d[:4] for d in requested_trade_dates}))
         return pd.DataFrame()
 
     # 逐日下载数据（Tushare daily接口需要用trade_date参数）
@@ -307,7 +310,10 @@ def download_daily_data(
     if all_data:
         result = pd.concat(all_data, ignore_index=True)
         print(f"\n✓ 日线数据下载完成: {len(result)} 条")
+        rebuild_market_daily_yearly_files(years=sorted({d[:4] for d in requested_trade_dates}))
         return result
+
+    rebuild_market_daily_yearly_files(years=sorted({d[:4] for d in requested_trade_dates}))
 
     return pd.DataFrame()
 
@@ -330,11 +336,12 @@ def download_daily_basic_data(
         pd.DataFrame: 下载的数据
     """
     output_dir = output_dir or DATA_DIRS['daily_basic']
+    requested_trade_dates = get_trade_dates(pro, start_date, end_date)
     print(f"\n{'='*60}")
     print(f"下载基本面数据: {start_date} ~ {end_date}")
     print(f"{'='*60}")
 
-    trade_dates = get_trade_dates(pro, start_date, end_date)
+    trade_dates = list(requested_trade_dates)
     print(f"交易日数量: {len(trade_dates)}")
 
     if not trade_dates:
@@ -359,6 +366,7 @@ def download_daily_basic_data(
 
     if not trade_dates:
         print("所有日期的数据已存在")
+        rebuild_market_daily_yearly_files(years=sorted({d[:4] for d in requested_trade_dates}))
         return pd.DataFrame()
 
     # 逐日下载数据
@@ -375,6 +383,65 @@ def download_daily_basic_data(
     if all_data:
         result = pd.concat(all_data, ignore_index=True)
         print(f"\n✓ 基本面数据下载完成: {len(result)} 条")
+        rebuild_market_daily_yearly_files(years=sorted({d[:4] for d in requested_trade_dates}))
+        return result
+
+    rebuild_market_daily_yearly_files(years=sorted({d[:4] for d in requested_trade_dates}))
+
+    return pd.DataFrame()
+
+
+def download_kzz_daily_data(
+    pro,
+    start_date: str,
+    end_date: str,
+    output_dir: str = None
+) -> pd.DataFrame:
+    """下载可转债日线数据。"""
+    output_dir = output_dir or DATA_DIRS['kzz_daily']
+    print(f"\n{'='*60}")
+    print(f"下载可转债日线数据: {start_date} ~ {end_date}")
+    print(f"{'='*60}")
+
+    trade_dates = get_trade_dates(pro, start_date, end_date)
+    print(f"交易日数量: {len(trade_dates)}")
+
+    if not trade_dates:
+        print("没有交易日")
+        return pd.DataFrame()
+
+    output_path = Path(output_dir)
+    existing_dates = set()
+    if output_path.exists():
+        for year_dir in output_path.iterdir():
+            if year_dir.is_dir() and year_dir.name.isdigit():
+                for month_dir in year_dir.iterdir():
+                    if month_dir.is_dir() and month_dir.name.isdigit():
+                        for f in month_dir.glob('kzz_daily_*.parquet'):
+                            date = parse_date_from_filename(f.name, 'kzz_daily')
+                            if date:
+                                existing_dates.add(date)
+
+    trade_dates = [d for d in trade_dates if d not in existing_dates]
+    print(f"需要下载的新交易日: {len(trade_dates)}")
+
+    if not trade_dates:
+        print("所有日期的数据已存在")
+        return pd.DataFrame()
+
+    all_data = []
+    for trade_dt in trade_dates:
+        df = pro.cb_daily(trade_date=trade_dt, fields=','.join(KZZ_DAILY_FIELDS))
+        if not df.empty:
+            _save_daily_file(df, output_dir, 'kzz_daily', trade_dt)
+            all_data.append(df)
+            print(f"  {trade_dt}: {len(df)} 条")
+        else:
+            print(f"  {trade_dt}: 无数据")
+
+    if all_data:
+        result = pd.concat(all_data, ignore_index=True)
+        print(f"\n✓ 可转债日线数据下载完成: {len(result)} 条")
         return result
 
     return pd.DataFrame()
@@ -408,6 +475,88 @@ def _save_daily_file(df: pd.DataFrame, output_dir: str, prefix: str, trade_date:
 
     table = pa.Table.from_pandas(df, preserve_index=False)
     pq.write_table(table, str(filepath))
+
+
+def rebuild_yearly_aggregate_files(
+    data_type: str,
+    years: Optional[List[str]] = None,
+    base_dir: Optional[str] = None,
+) -> List[Path]:
+    """按逐日文件重建年度汇总文件。
+
+    当前支持:
+    - daily -> daily_data/daily/YYYY_all.parquet
+    - daily_basic -> daily_data/daily_basic/YYYY_full.parquet
+    """
+    config_map = {
+        'daily': {
+            'prefix': 'daily',
+            'yearly_suffix': 'all',
+        },
+        'daily_basic': {
+            'prefix': 'daily_basic',
+            'yearly_suffix': 'full',
+        },
+    }
+    if data_type not in config_map:
+        raise ValueError(f"不支持的 data_type: {data_type}")
+
+    cfg = config_map[data_type]
+    root = Path(base_dir or DATA_DIRS[data_type])
+    if not root.exists():
+        return []
+
+    target_years = sorted({str(y) for y in (years or []) if str(y).isdigit()})
+    if not target_years:
+        target_years = sorted([p.name for p in root.iterdir() if p.is_dir() and p.name.isdigit()])
+
+    written_files: List[Path] = []
+    for year in target_years:
+        year_dir = root / year
+        if not year_dir.exists():
+            continue
+
+        frames: List[pd.DataFrame] = []
+        for month_dir in sorted([p for p in year_dir.iterdir() if p.is_dir() and p.name.isdigit()]):
+            for file_path in sorted(month_dir.glob(f"{cfg['prefix']}_*.parquet")):
+                try:
+                    frames.append(pd.read_parquet(file_path))
+                except Exception as e:
+                    print(f"读取失败，跳过 {file_path}: {e}")
+
+        if not frames:
+            continue
+
+        merged = pd.concat(frames, ignore_index=True)
+        if 'trade_date' in merged.columns:
+            merged['trade_date'] = pd.to_numeric(merged['trade_date'], errors='coerce').astype('Int64')
+            merged = merged.dropna(subset=['trade_date']).copy()
+            merged['trade_date'] = merged['trade_date'].astype(int)
+
+        dedup_cols = [col for col in ['ts_code', 'trade_date'] if col in merged.columns]
+        if dedup_cols:
+            merged = merged.drop_duplicates(subset=dedup_cols, keep='last')
+
+        sort_cols = [col for col in ['trade_date', 'ts_code'] if col in merged.columns]
+        if sort_cols:
+            merged = merged.sort_values(sort_cols).reset_index(drop=True)
+
+        out_path = root / f"{year}_{cfg['yearly_suffix']}.parquet"
+        table = pa.Table.from_pandas(merged, preserve_index=False)
+        pq.write_table(table, str(out_path))
+        written_files.append(out_path)
+        print(f"✓ 已重建年度汇总: {out_path} ({len(merged)} 条)")
+
+    return written_files
+
+
+def rebuild_market_daily_yearly_files(years: Optional[List[str]] = None) -> Dict[str, List[str]]:
+    """同时补齐股票日线与每日基本面的年度汇总文件。"""
+    summary = {
+        'daily': [str(p) for p in rebuild_yearly_aggregate_files('daily', years=years)],
+        'daily_basic': [str(p) for p in rebuild_yearly_aggregate_files('daily_basic', years=years)],
+    }
+    return summary
 
 
 # =============================================================================
@@ -493,15 +642,21 @@ def update_financial_daily_data(
 def update_daily_data(
     start_date: str = None,
     end_date: str = None,
-    include_today: bool = False
+    include_today: bool = False,
+    daily: bool = True,
+    daily_basic: bool = True,
+    kzz_daily: bool = True
 ):
     """
-    更新日线和基本面数据
+    更新日线、可转债日线和基本面数据
 
     Args:
         start_date: 开始日期，None 表示自动检测
         end_date: 结束日期，None 表示自动检测
         include_today: 是否包含今天的数据
+        daily: 是否更新股票日线
+        daily_basic: 是否更新每日基本面
+        kzz_daily: 是否更新可转债日线
     """
     pro = init_tushare()
 
@@ -510,14 +665,18 @@ def update_daily_data(
         latest_dates = get_all_latest_dates()
         latest_daily = latest_dates.get('daily')
         latest_basic = latest_dates.get('daily_basic')
+        latest_kzz = latest_dates.get('kzz_daily')
 
-        # 使用较晚的日期作为起始点
-        if latest_daily and latest_basic:
-            start_date = max(latest_daily, latest_basic)
-        elif latest_daily:
-            start_date = latest_daily
-        elif latest_basic:
-            start_date = latest_basic
+        candidates = []
+        if daily and latest_daily:
+            candidates.append(latest_daily)
+        if daily_basic and latest_basic:
+            candidates.append(latest_basic)
+        if kzz_daily and latest_kzz:
+            candidates.append(latest_kzz)
+
+        if candidates:
+            start_date = min(candidates)
         else:
             start_date = '20250101'
 
@@ -545,10 +704,16 @@ def update_daily_data(
     print(f"\n更新范围: {start_date} ~ {end_date}")
 
     # 下载日线数据
-    download_daily_data(pro, start_date, end_date)
+    if daily:
+        download_daily_data(pro, start_date, end_date)
+
+    # 下载可转债日线数据
+    if kzz_daily:
+        download_kzz_daily_data(pro, start_date, end_date)
 
     # 下载基本面数据
-    download_daily_basic_data(pro, start_date, end_date)
+    if daily_basic:
+        download_daily_basic_data(pro, start_date, end_date)
 
 
 def update_financial_data(
@@ -588,6 +753,7 @@ def update_financial_data(
 def update_all_data(
     daily: bool = True,
     daily_basic: bool = True,
+    kzz_daily: bool = True,
     financial: bool = True,
     start_date: str = None,
     end_date: str = None,
@@ -599,6 +765,7 @@ def update_all_data(
     Args:
         daily: 是否更新日线数据
         daily_basic: 是否更新基本面数据
+        kzz_daily: 是否更新可转债日线数据
         financial: 是否更新财务报表数据
         start_date: 开始日期，None 表示自动检测
         end_date: 结束日期，None 表示自动检测
@@ -618,11 +785,14 @@ def update_all_data(
     latest_dates = get_all_latest_dates()
 
     # 更新日线和基本面数据
-    if daily or daily_basic:
+    if daily or daily_basic or kzz_daily:
         update_daily_data(
             start_date=start_date,
             end_date=end_date,
-            include_today=include_today
+            include_today=include_today,
+            daily=daily,
+            daily_basic=daily_basic,
+            kzz_daily=kzz_daily
         )
 
     # 更新财务报表数据
@@ -664,6 +834,12 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--kzz-daily',
+        action='store_true',
+        help='只更新可转债日线数据'
+    )
+
+    parser.add_argument(
         '--financial',
         action='store_true',
         help='只更新财务报表数据'
@@ -699,13 +875,16 @@ def main():
     args = parse_args()
 
     # 确定更新范围
-    daily = args.daily or not (args.daily_basic or args.financial)
-    daily_basic = args.daily_basic or not (args.daily or args.financial)
+    selected = [args.daily, args.daily_basic, args.kzz_daily, args.financial]
+    daily = args.daily or not any(selected)
+    daily_basic = args.daily_basic or not any(selected)
+    kzz_daily = args.kzz_daily or not any(selected)
     financial = args.financial or not args.no_financial
 
     update_all_data(
         daily=daily,
         daily_basic=daily_basic,
+        kzz_daily=kzz_daily,
         financial=financial,
         start_date=args.start,
         end_date=args.end,

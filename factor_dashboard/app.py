@@ -9,6 +9,8 @@ import sys
 import html
 import hashlib
 import re
+import io
+import gzip
 import json
 import uuid
 import time
@@ -21,8 +23,9 @@ from typing import Optional, List, Dict
 
 import pandas as pd
 import numpy as np
+import pyarrow.parquet as pq
 
-from flask import Flask, render_template, jsonify, request, redirect, url_for, session
+from flask import Flask, render_template, jsonify, request, redirect, url_for, session, Response
 
 # 添加父目录到路径（确保正确导入 update_data）
 _parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,12 +33,16 @@ if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
 from factor_analysis import FactorAnalysis
+from mylib.get_local_data import (
+    get_local_data, DATA_TYPES, DATA_TYPE_META, list_data_fields, infer_data_type_from_field, normalize_data_type
+)
 
 # 导入 update_data 模块
 import update_data as _update_data_module
 get_all_latest_dates = _update_data_module.get_all_latest_dates
 init_tushare = _update_data_module.init_tushare
 update_daily_data = _update_data_module.download_daily_data
+update_kzz_daily_data = _update_data_module.download_kzz_daily_data
 update_financial_data = _update_data_module.update_financial_data
 is_after_market_close = _update_data_module.is_after_market_close
 get_today_str = _update_data_module.get_today_str
@@ -139,6 +146,251 @@ def login_required(f):
 
 # 缓存因子数据
 _factor_data_cache = {}
+
+
+def _parse_bool_param(value, default=False):
+    """解析布尔参数（兼容 query/json 的字符串输入）"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def _normalize_yyyymmdd(value: Optional[str]) -> Optional[str]:
+    """标准化日期为 YYYYMMDD，支持 YYYY-MM-DD 输入"""
+    if value in (None, ''):
+        return None
+    date_str = str(value).strip().replace('-', '')
+    if re.fullmatch(r'\d{8}', date_str):
+        return date_str
+    raise ValueError('日期格式错误，支持 YYYYMMDD 或 YYYY-MM-DD')
+
+
+def _parse_stock_list(raw_value) -> Optional[List[str]]:
+    """解析股票列表，支持数组或逗号分隔字符串"""
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, list):
+        items = raw_value
+    else:
+        items = re.split(r'[,，\s]+', str(raw_value))
+    stocks = [str(x).strip().upper() for x in items if str(x).strip()]
+    return stocks or None
+
+
+def _serialize_local_df(df: pd.DataFrame, output_format: str, limit: int) -> Dict:
+    """将 get_local_data 返回的宽表转换为 API JSON"""
+    if df is None or df.empty:
+        return {
+            'shape': {'rows': 0, 'cols': 0},
+            'date_range': {'start': None, 'end': None},
+            'stock_count': 0,
+            'date_count': 0,
+            'format': output_format,
+            'total_records': 0,
+            'returned_records': 0,
+            'truncated': False,
+            'records': []
+        }
+
+    base = {
+        'shape': {'rows': int(df.shape[0]), 'cols': int(df.shape[1])},
+        'date_range': {'start': str(df.index.min().date()), 'end': str(df.index.max().date())},
+        'stock_count': int(df.shape[1]),
+        'date_count': int(df.shape[0]),
+        'format': output_format,
+    }
+
+    if output_format == 'wide':
+        out_df = df.copy()
+        out_df.index = out_df.index.astype(str)
+        total_records = len(out_df)
+        truncated = total_records > limit
+        if truncated:
+            out_df = out_df.head(limit)
+        out_reset = out_df.reset_index()
+        records = out_reset.where(pd.notnull(out_reset), None).to_dict(orient='records')
+        return {
+            **base,
+            'total_records': int(total_records),
+            'returned_records': int(len(records)),
+            'truncated': truncated,
+            'records': records
+        }
+
+    long_df = df.stack(dropna=True).reset_index()
+    long_df.columns = ['date', 'ts_code', 'value']
+    long_df['date'] = long_df['date'].astype(str)
+    total_records = len(long_df)
+    truncated = total_records > limit
+    if truncated:
+        long_df = long_df.head(limit)
+    long_df = long_df.where(pd.notnull(long_df), None)
+    return {
+        **base,
+        'total_records': int(total_records),
+        'returned_records': int(len(long_df)),
+        'truncated': truncated,
+        'records': long_df.to_dict(orient='records')
+    }
+
+
+def _extract_local_query_params(payload: Optional[Dict] = None) -> Dict:
+    """解析并校验本地数据查询参数（供 JSON / parquet 接口复用）"""
+    payload = payload or {}
+
+    def _get_param(name: str, default=None):
+        if name in payload:
+            return payload.get(name, default)
+        return request.args.get(name, default)
+
+    data_type_raw = _get_param('data_type', None)
+    data_type = str(data_type_raw).strip() if data_type_raw is not None else ''
+    data_type = normalize_data_type(data_type)
+    if not data_type:
+        data_type = None
+    elif data_type not in DATA_TYPES:
+        raise ValueError(f"不支持的数据类型: {data_type}")
+
+    start = _normalize_yyyymmdd(_get_param('start'))
+    end = _normalize_yyyymmdd(_get_param('end'))
+    if start and end and start > end:
+        raise ValueError('start 不能晚于 end')
+
+    raw_stocks = _get_param('stocks')
+    if raw_stocks is None:
+        raw_stocks = _get_param('symbols')
+    if raw_stocks is None:
+        raw_stocks = _get_param('sec_list')
+    sec_list = _parse_stock_list(raw_stocks)
+
+    fields = _get_param('fields')
+    field = _get_param('field')
+    filed = 'close'
+    if fields is not None:
+        if isinstance(fields, str):
+            fields = [f.strip() for f in re.split(r'[,，]+', fields) if f.strip()]
+        filed = fields
+    elif field is not None:
+        filed = field
+
+    output_format = str(_get_param('format', 'long')).strip().lower()
+    if output_format not in {'long', 'wide'}:
+        raise ValueError("format 仅支持 'long' 或 'wide'")
+
+    limit = int(_get_param('limit', 5000))
+    if limit <= 0:
+        raise ValueError('limit 必须大于 0')
+    limit = min(limit, 10000000)
+
+    parallel = _parse_bool_param(_get_param('parallel', True), default=True)
+    max_workers = int(_get_param('max_workers', 8))
+    max_workers = max(1, min(max_workers, 32))
+
+    return {
+        'data_type': data_type,
+        'start': start,
+        'end': end,
+        'sec_list': sec_list,
+        'filed': filed,
+        'output_format': output_format,
+        'limit': limit,
+        'parallel': parallel,
+        'max_workers': max_workers
+    }
+
+
+def _get_daily_trade_dates_int(start: Optional[str], end: Optional[str]) -> List[int]:
+    """从 daily 文件名提取交易日（YYYYMMDD int）"""
+    daily_dir = BASE_DIR / 'daily_data' / 'daily'
+    if not daily_dir.exists():
+        return []
+
+    files = list(daily_dir.glob('*/**/daily_*.parquet'))
+    dates: List[int] = []
+    for f in files:
+        m = re.search(r'daily_(\d{8})\.parquet$', f.name)
+        if not m:
+            continue
+        d = int(m.group(1))
+        if start and d < int(start):
+            continue
+        if end and d > int(end):
+            continue
+        dates.append(d)
+
+    if not dates:
+        return []
+    dates = sorted(set(dates))
+    return dates
+
+
+def _extend_financial_df_to_end(df: pd.DataFrame, end: Optional[str]) -> pd.DataFrame:
+    """对财务日频宽表按交易日向前填充，延展到 end（若存在对应交易日文件）"""
+    if df is None or df.empty or not end:
+        return df
+
+    try:
+        end_ts = pd.to_datetime(end, format='%Y%m%d')
+    except Exception:
+        return df
+
+    cur_max = df.index.max()
+    if pd.isna(cur_max) or cur_max >= end_ts:
+        return df
+
+    start_next = (cur_max + pd.Timedelta(days=1)).strftime('%Y%m%d')
+    trade_dates = _get_daily_trade_dates_int(start_next, end)
+    if not trade_dates:
+        return df
+
+    ext_idx = pd.to_datetime([str(d) for d in trade_dates], format='%Y%m%d', errors='coerce')
+    ext_idx = ext_idx[~pd.isna(ext_idx)]
+    if len(ext_idx) == 0:
+        return df
+
+    out = df.reindex(df.index.union(ext_idx)).sort_index().ffill()
+    out.index.name = 'date'
+    return out
+
+
+def _maybe_extend_financial_result(result, data_type: str, end: Optional[str]):
+    """财务日频数据自动延展到最新可用交易日"""
+    fin_types = {
+        'cashflow_daily', 'income_daily', 'balance_daily',
+        'cashflow_daily_cn', 'income_daily_cn', 'balance_daily_cn'
+    }
+    if data_type not in fin_types:
+        return result
+    if isinstance(result, dict):
+        return {k: _extend_financial_df_to_end(v, end) for k, v in result.items()}
+    return _extend_financial_df_to_end(result, end)
+
+
+def _get_quarter_latest_period(data_type: str) -> Optional[str]:
+    """获取季度类型的最新报告期（YYYYMMDD）"""
+    meta = DATA_TYPE_META.get(data_type, {})
+    data_dir = Path(str(meta.get('data_dir', '')))
+    all_file_name = str(meta.get('all_file', '')).strip()
+    date_col = str(meta.get('date_col', 'end_date'))
+    if not all_file_name or not data_dir.exists():
+        return None
+    all_file = data_dir / all_file_name
+    if not all_file.exists():
+        return None
+
+    try:
+        table = pq.read_table(str(all_file), columns=[date_col])
+        s = table.column(date_col).to_pandas()
+        if s.empty:
+            return None
+        d = pd.to_numeric(s.astype(str).str.replace('-', '', regex=False), errors='coerce').dropna()
+        if d.empty:
+            return None
+        return str(int(d.max()))
+    except Exception:
+        return None
 
 def get_by_factor_dir() -> Path:
     """获取按因子存储的目录"""
@@ -685,6 +937,12 @@ def data_manager():
     return render_template('data_manager.html', active_page='data-manager')
 
 
+@app.route('/data-fields')
+def data_fields_page():
+    """数据字段查看页面"""
+    return render_template('data_fields.html', active_page='data-fields')
+
+
 @app.route('/docs')
 def docs_center():
     """文档中心页面"""
@@ -935,6 +1193,33 @@ def api_backtest_history():
         limit = request.args.get("limit", default=200, type=int)
         items = _load_history_items(limit=max(1, min(1000, limit)))
         return jsonify({"status": "success", "data": {"items": items}})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route('/api/backtest/delete', methods=['POST'])
+def api_backtest_delete():
+    """API: 删除回测结果"""
+    try:
+        data = request.get_json() or {}
+        task_id = data.get("task_id", "").strip()
+
+        if not task_id:
+            return jsonify({"status": "error", "message": "缺少task_id"})
+
+        # 验证task_id安全
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", task_id):
+            return jsonify({"status": "error", "message": "无效的task_id"})
+
+        run_dir = BACKTEST_RUNS_DIR / task_id
+        if not run_dir.exists():
+            return jsonify({"status": "error", "message": "回测结果不存在"})
+
+        # 删除目录
+        import shutil
+        shutil.rmtree(run_dir)
+
+        return jsonify({"status": "success", "message": "删除成功"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -1712,84 +1997,345 @@ def factor_viewer():
 @app.route('/api/data/status')
 def api_data_status():
     """API: 获取daily_data目录状态"""
+    warnings = []
+    data_tables = _get_data_manager_tables()
+    latest_dates = {}
+
     try:
-        # 获取各类数据的最新日期
         latest_dates = get_all_latest_dates()
+    except Exception as e:
+        warnings.append(f'获取最新日期失败: {e}')
 
-        # 获取交易日信息
-        try:
-            pro = init_tushare()
-            today = get_today_str()
-            trade_dates = pro.trade_cal(
-                exchange='SSE',
-                start_date=today,
-                end_date=today,
-                is_open='1'
-            )
-            is_trading_day = len(trade_dates) > 0
-        except:
-            is_trading_day = False
+    is_trading_day = False
+    try:
+        pro = init_tushare()
+        today = get_today_str()
+        trade_dates = pro.trade_cal(
+            exchange='SSE',
+            start_date=today,
+            end_date=today,
+            is_open='1'
+        )
+        is_trading_day = len(trade_dates) > 0
+    except Exception as e:
+        warnings.append(f'获取交易日状态失败: {e}')
 
-        # 数据表配置
-        data_tables = {
-            'daily': {
-                'name': '日线行情',
-                'description': 'OHLCV行情数据',
-                'fields': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'change', 'pct_chg', 'vol', 'amount'],
-                'directory': 'daily_data/daily/'
-            },
-            'daily_basic': {
-                'name': '每日基本面',
-                'description': '每日基本面指标',
-                'fields': ['ts_code', 'trade_date', 'close', 'turnover_rate', 'turnover_rate_f', 'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv'],
-                'directory': 'daily_data/daily_basic/'
-            },
-            'cashflow_daily': {
-                'name': '现金流量表',
-                'description': '每日推算的现金流量数据',
-                'fields': ['ts_code', 'trade_date', 'n_cashflow_act', 'n_cashflow_inv_act', 'n_cash_flows_fnc_act', 'c_fr_sale_sg', 'c_paid_goods_s', 'net_profit'],
-                'directory': 'daily_data/cashflow_daily/'
-            },
-            'income_daily': {
-                'name': '利润表',
-                'description': '每日推算的利润数据',
-                'fields': ['ts_code', 'trade_date', 'total_revenue', 'revenue', 'oper_cost', 'operate_profit', 'total_profit', 'n_income', 'basic_eps'],
-                'directory': 'daily_data/income_daily/'
-            },
-            'balance_daily': {
-                'name': '资产负债表',
-                'description': '每日推算的资产负债数据',
-                'fields': ['ts_code', 'trade_date', 'total_assets', 'total_liab', 'total_hldr_eqy_exc_min_int', 'total_cur_assets', 'total_cur_liab', 'cash_reser_cb'],
-                'directory': 'daily_data/balance_daily/'
-            }
+    tables_info = []
+    for table_id, config in data_tables.items():
+        latest = latest_dates.get(table_id)
+        if (not latest) and config.get('period_type') == 'quarter':
+            latest = _get_quarter_latest_period(table_id)
+        tables_info.append({
+            'id': table_id,
+            'name': config['name'],
+            'description': config['description'],
+            'fields': config['fields'],
+            'latest_date': latest,
+            'directory': config['directory'],
+            'status': 'updated' if latest else 'empty',
+            'can_update': bool(config.get('can_update', False)),
+            'period_type': config.get('period_type', 'daily')
+        })
+
+    today_value = None
+    try:
+        today_value = get_today_str()
+    except Exception as e:
+        warnings.append(f'获取今日日期失败: {e}')
+        today_value = datetime.now().strftime('%Y%m%d')
+
+    after_market_close_value = False
+    try:
+        after_market_close_value = is_after_market_close()
+    except Exception as e:
+        warnings.append(f'获取收盘状态失败: {e}')
+
+    return jsonify({
+        'status': 'success',
+        'data': {
+            'tables': tables_info,
+            'is_trading_day': is_trading_day,
+            'is_after_market_close': after_market_close_value,
+            'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'today': today_value,
+            'warnings': warnings
+        }
+    })
+
+
+@app.route('/api/data/fields')
+def api_data_fields():
+    """API: 获取 get_remote_data 可用 data_type 及字段列表"""
+    try:
+        type_name_map = {
+            'daily': '日线行情',
+            'kzz_daily': '可转债日线',
+            'daily_basic': '每日基本面',
+            'derivative': '衍生财务指标',
+            'cashflow_daily': '现金流量表(日频)',
+            'income_daily': '利润表(日频)',
+            'balance_daily': '资产负债表(日频)',
+            'cashflow_q': '现金流量表(季度)',
+            'income_q': '利润表(季度)',
+            'balance_q': '资产负债表(季度)',
+            'cashflow_daily_cn': '现金流量表(日频中文列)',
+            'income_daily_cn': '利润表(日频中文列)',
+            'balance_daily_cn': '资产负债表(日频中文列)',
+            'cashflow_q_cn': '现金流量表(季度中文列)',
+            'income_q_cn': '利润表(季度中文列)',
+            'balance_q_cn': '资产负债表(季度中文列)',
         }
 
-        # 构建返回数据
-        tables_info = []
-        for table_id, config in data_tables.items():
-            latest = latest_dates.get(table_id)
-            tables_info.append({
-                'id': table_id,
-                'name': config['name'],
-                'description': config['description'],
-                'fields': config['fields'],
-                'latest_date': latest,
-                'directory': config['directory'],
-                'status': 'updated' if latest else 'empty'
+        result = []
+        for data_type in DATA_TYPES:
+            meta = DATA_TYPE_META.get(data_type, {})
+            fields = list_data_fields(data_type=data_type, include_meta=False)
+            result.append({
+                'data_type': data_type,
+                'name': type_name_map.get(data_type, data_type),
+                'field_count': len(fields),
+                'fields': fields,
+                'directory': str(meta.get('data_dir', '')),
+                'code_col': str(meta.get('code_col', 'ts_code')),
+                'date_col': str(meta.get('date_col', 'trade_date')),
             })
 
         return jsonify({
             'status': 'success',
             'data': {
-                'tables': tables_info,
-                'is_trading_day': is_trading_day,
-                'is_after_market_close': is_after_market_close(),
-                'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'today': get_today_str()
+                'count': len(result),
+                'items': result
             }
         })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/local-data/query', methods=['GET', 'POST'])
+def api_local_data_query():
+    """API: 查询本地日频数据（移植 get_local_data 能力）"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        params = _extract_local_query_params(payload)
+
+        resolved_data_type = params['data_type'] or infer_data_type_from_field(
+            filed=params['filed'], start=params['start'], end=params['end']
+        )
+
+        result = get_local_data(
+            sec_list=params['sec_list'],
+            start=params['start'],
+            end=params['end'],
+            filed=params['filed'],
+            data_type=resolved_data_type,
+            parallel=params['parallel'],
+            max_workers=params['max_workers']
+        )
+        result = _maybe_extend_financial_result(result, resolved_data_type, params['end'])
+
+        if isinstance(result, dict):
+            data = {str(k): _serialize_local_df(v, params['output_format'], params['limit']) for k, v in result.items()}
+        else:
+            data = _serialize_local_df(result, params['output_format'], params['limit'])
+
+        return jsonify({
+            'status': 'success',
+            'data': data,
+            'params': {
+                'data_type': resolved_data_type,
+                'start': params['start'],
+                'end': params['end'],
+                'stocks': params['sec_list'] or [],
+                'field': params['filed'],
+                'format': params['output_format'],
+                'limit': params['limit'],
+                'parallel': params['parallel'],
+                'max_workers': params['max_workers']
+            }
+        })
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e), 'supported_data_types': DATA_TYPES})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/local-data/query/parquet', methods=['POST'])
+def api_local_data_query_parquet():
+    """API: 查询本地数据并返回二进制 parquet（高性能）"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        params = _extract_local_query_params(payload)
+
+        resolved_data_type = params['data_type'] or infer_data_type_from_field(
+            filed=params['filed'], start=params['start'], end=params['end']
+        )
+
+        result = get_local_data(
+            sec_list=params['sec_list'],
+            start=params['start'],
+            end=params['end'],
+            filed=params['filed'],
+            data_type=resolved_data_type,
+            parallel=params['parallel'],
+            max_workers=params['max_workers']
+        )
+        result = _maybe_extend_financial_result(result, resolved_data_type, params['end'])
+
+        total_records = 0
+        returned_records = 0
+        truncated = False
+
+        # 单字段场景：支持 wide/long 两种输出
+        if isinstance(result, pd.DataFrame):
+            if params['output_format'] == 'wide':
+                out_df = result.copy()
+                if out_df.empty:
+                    out_df = pd.DataFrame(columns=['date'])
+                else:
+                    out_df = out_df.sort_index()
+                    out_df.index = out_df.index.astype(str)
+                    out_df.index.name = 'date'
+                    out_df = out_df.reset_index()
+                total_records = len(out_df)
+                if total_records > params['limit']:
+                    out_df = out_df.head(params['limit'])
+                    truncated = True
+                returned_records = len(out_df)
+                kind = 'single_wide'
+            else:
+                if result is None or result.empty:
+                    out_df = pd.DataFrame(columns=['date', 'ts_code', 'value'])
+                else:
+                    out_df = result.stack(dropna=True).reset_index()
+                    out_df.columns = ['date', 'ts_code', 'value']
+                    out_df['date'] = out_df['date'].astype(str)
+                total_records = len(out_df)
+                if total_records > params['limit']:
+                    out_df = out_df.head(params['limit'])
+                    truncated = True
+                returned_records = len(out_df)
+                kind = 'single_long'
+        else:
+            # 多字段场景：统一返回 long + field 列
+            frames = []
+            for field_name, df in (result or {}).items():
+                if df is None or df.empty:
+                    continue
+                part = df.stack(dropna=True).reset_index()
+                if part.empty:
+                    continue
+                part.columns = ['date', 'ts_code', 'value']
+                part['date'] = part['date'].astype(str)
+                part['field'] = str(field_name)
+                frames.append(part)
+
+            if frames:
+                out_df = pd.concat(frames, ignore_index=True)
+            else:
+                out_df = pd.DataFrame(columns=['date', 'ts_code', 'field', 'value'])
+
+            total_records = len(out_df)
+            if total_records > params['limit']:
+                out_df = out_df.head(params['limit'])
+                truncated = True
+            returned_records = len(out_df)
+            kind = 'multi_long'
+
+        buf = io.BytesIO()
+        out_df.to_parquet(buf, index=False)
+        body = buf.getvalue()
+
+        accept_encoding = (request.headers.get('Accept-Encoding') or '').lower()
+        if 'gzip' in accept_encoding and len(body) > 1024:
+            body = gzip.compress(body, compresslevel=1)
+            content_encoding = 'gzip'
+        else:
+            content_encoding = ''
+
+        resp = Response(body, mimetype='application/octet-stream')
+        resp.headers['Content-Disposition'] = 'attachment; filename="local_data.parquet"'
+        if content_encoding:
+            resp.headers['Content-Encoding'] = content_encoding
+            resp.headers['Vary'] = 'Accept-Encoding'
+        resp.headers['X-Remote-Data-Kind'] = kind
+        resp.headers['X-Remote-Data-Total'] = str(total_records)
+        resp.headers['X-Remote-Data-Returned'] = str(returned_records)
+        resp.headers['X-Remote-Data-Truncated'] = '1' if truncated else '0'
+        return resp
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e), 'supported_data_types': DATA_TYPES}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tick-data/query/parquet', methods=['POST'])
+def api_tick_data_query_parquet():
+    """API: 查询 tick 数据并返回二进制 parquet。"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        stock_codes = payload.get('stock_codes')
+        start_date = payload.get('start_date')
+        end_date = payload.get('end_date')
+        tick_dir = str(payload.get('tick_dir') or (BASE_DIR / 'tick_2026'))
+        use_short = bool(payload.get('short', False))
+
+        if stock_codes in (None, '', []):
+            return jsonify({'status': 'error', 'message': '缺少 stock_codes 参数'}), 400
+
+        from mylib.get_tick_data import get_tick_data, get_tick_data_short
+
+        if use_short:
+            result = get_tick_data_short(
+                stock_codes=stock_codes,
+                start_date=start_date,
+                end_date=end_date,
+                tick_dir=tick_dir,
+            )
+        else:
+            result = get_tick_data(
+                stock_codes=stock_codes,
+                start_date=start_date,
+                end_date=end_date,
+                tick_dir=tick_dir,
+            )
+
+        if isinstance(result, pd.DataFrame):
+            out_df = result.reset_index()
+            kind = 'single'
+        else:
+            frames = []
+            for code, df in (result or {}).items():
+                if df is None:
+                    continue
+                part = df.reset_index()
+                if 'stock_code' not in part.columns:
+                    part['stock_code'] = str(code)
+                frames.append(part)
+            out_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=['datetime', 'stock_code'])
+            kind = 'multi'
+
+        buf = io.BytesIO()
+        out_df.to_parquet(buf, index=False)
+        body = buf.getvalue()
+
+        accept_encoding = (request.headers.get('Accept-Encoding') or '').lower()
+        if 'gzip' in accept_encoding and len(body) > 1024:
+            body = gzip.compress(body, compresslevel=1)
+            content_encoding = 'gzip'
+        else:
+            content_encoding = ''
+
+        resp = Response(body, mimetype='application/octet-stream')
+        resp.headers['Content-Disposition'] = 'attachment; filename="tick_data.parquet"'
+        if content_encoding:
+            resp.headers['Content-Encoding'] = content_encoding
+            resp.headers['Vary'] = 'Accept-Encoding'
+        resp.headers['X-Remote-Tick-Kind'] = kind
+        return resp
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 @app.route('/api/data/update', methods=['POST'])
@@ -1809,6 +2355,8 @@ def api_data_update():
                 cmd = [sys.executable, 'update_data.py']
                 if update_type == 'daily':
                     cmd.extend(['--daily'])
+                elif update_type == 'kzz_daily':
+                    cmd.extend(['--kzz-daily'])
                 elif update_type == 'daily_basic':
                     cmd.extend(['--daily-basic'])
                 elif update_type == 'financial':
@@ -1841,10 +2389,11 @@ def api_data_update():
 def api_data_update_sync():
     """API: 同步执行数据更新（返回进度）"""
     try:
+        started_at = time.time()
         data = request.get_json() or {}
         update_type = data.get('type', 'all')
         include_today = data.get('include_today', is_after_market_close())
-        valid_types = {'all', 'daily', 'daily_basic', 'financial'}
+        valid_types = {'all', 'daily', 'kzz_daily', 'daily_basic', 'financial'}
 
         if update_type not in valid_types:
             return jsonify({
@@ -1854,6 +2403,7 @@ def api_data_update_sync():
 
         table_to_path = {
             'daily': BASE_DIR / 'daily_data' / 'daily',
+            'kzz_daily': BASE_DIR / 'daily_data' / 'kzz_daily',
             'daily_basic': BASE_DIR / 'daily_data' / 'daily_basic',
             'cashflow_daily': BASE_DIR / 'daily_data' / 'cashflow_daily',
             'income_daily': BASE_DIR / 'daily_data' / 'income_daily',
@@ -1861,6 +2411,7 @@ def api_data_update_sync():
         }
         table_to_prefix = {
             'daily': 'daily',
+            'kzz_daily': 'kzz_daily',
             'daily_basic': 'daily_basic',
             'cashflow_daily': 'cashflow_daily',
             'income_daily': 'income_daily',
@@ -1882,6 +2433,7 @@ def api_data_update_sync():
         # 执行更新
         try:
             pro = init_tushare()
+            latest_before = get_all_latest_dates()
             before_dates = {
                 name: _collect_existing_dates(name) for name in table_to_path.keys()
             }
@@ -1890,16 +2442,19 @@ def api_data_update_sync():
             latest_dates = get_all_latest_dates()
             if update_type == 'daily':
                 latest = latest_dates.get('daily') or '20250101'
+            elif update_type == 'kzz_daily':
+                latest = latest_dates.get('kzz_daily') or '20250101'
             elif update_type == 'daily_basic':
                 latest = latest_dates.get('daily_basic') or '20250101'
             else:
-                latest = max(
+                latest = min(
                     latest_dates.get('daily') or '20250101',
+                    latest_dates.get('kzz_daily') or '20250101',
                     latest_dates.get('daily_basic') or '20250101'
                 )
 
             trade_dates = []
-            if update_type in ('all', 'daily', 'daily_basic'):
+            if update_type in ('all', 'daily', 'kzz_daily', 'daily_basic'):
                 # 获取需要更新的交易日
                 today = get_today_str()
                 trade_dates = pro.trade_cal(
@@ -1912,10 +2467,19 @@ def api_data_update_sync():
                 trade_dates = sorted(set(trade_dates))
 
                 if not trade_dates:
+                    elapsed_sec = round(time.time() - started_at, 2)
                     return jsonify({
                         'status': 'success',
                         'message': '没有需要更新的交易日',
-                        'data': {'updated_count': 0}
+                        'data': {
+                            'updated_count': 0,
+                            'update_type': update_type,
+                            'trade_dates': [],
+                            'elapsed_sec': elapsed_sec,
+                            'latest_before': latest_before,
+                            'latest_after': latest_before,
+                            'table_summary': {}
+                        }
                     })
 
                 # 如果不包含今天，过滤掉
@@ -1923,10 +2487,19 @@ def api_data_update_sync():
                     trade_dates = [d for d in trade_dates if d != today]
 
                 if not trade_dates:
+                    elapsed_sec = round(time.time() - started_at, 2)
                     return jsonify({
                         'status': 'success',
                         'message': '没有需要更新的交易日',
-                        'data': {'updated_count': 0}
+                        'data': {
+                            'updated_count': 0,
+                            'update_type': update_type,
+                            'trade_dates': [],
+                            'elapsed_sec': elapsed_sec,
+                            'latest_before': latest_before,
+                            'latest_after': latest_before,
+                            'table_summary': {}
+                        }
                     })
 
                 # 限制为最新5个交易日
@@ -1938,6 +2511,10 @@ def api_data_update_sync():
                 from update_data import download_daily_data
                 download_daily_data(pro, trade_dates[0], trade_dates[-1])
 
+            if update_type in ('all', 'kzz_daily'):
+                from update_data import download_kzz_daily_data
+                download_kzz_daily_data(pro, trade_dates[0], trade_dates[-1])
+
             if update_type in ('all', 'daily_basic'):
                 from update_data import download_daily_basic_data
                 download_daily_basic_data(pro, trade_dates[0], trade_dates[-1])
@@ -1948,6 +2525,7 @@ def api_data_update_sync():
             after_dates = {
                 name: _collect_existing_dates(name) for name in table_to_path.keys()
             }
+            latest_after = get_all_latest_dates()
 
             updated_details = {}
             for name in table_to_path.keys():
@@ -1955,6 +2533,8 @@ def api_data_update_sync():
 
             if update_type == 'daily':
                 updated_count = len(updated_details['daily'])
+            elif update_type == 'kzz_daily':
+                updated_count = len(updated_details['kzz_daily'])
             elif update_type == 'daily_basic':
                 updated_count = len(updated_details['daily_basic'])
             elif update_type == 'financial':
@@ -1966,6 +2546,7 @@ def api_data_update_sync():
             else:
                 updated_count = (
                     len(updated_details['daily']) +
+                    len(updated_details['kzz_daily']) +
                     len(updated_details['daily_basic'])
                 )
 
@@ -1974,6 +2555,17 @@ def api_data_update_sync():
             else:
                 message = f'更新完成，无新增数据（检查了 {len(trade_dates)} 个交易日）'
 
+            table_summary = {}
+            for name in table_to_path.keys():
+                new_dates = updated_details.get(name, [])
+                table_summary[name] = {
+                    'new_file_count': len(new_dates),
+                    'first_new_date': new_dates[0] if new_dates else None,
+                    'last_new_date': new_dates[-1] if new_dates else None
+                }
+
+            elapsed_sec = round(time.time() - started_at, 2)
+
             return jsonify({
                 'status': 'success',
                 'message': message,
@@ -1981,7 +2573,11 @@ def api_data_update_sync():
                     'updated_count': updated_count,
                     'trade_dates': trade_dates,
                     'update_type': update_type,
-                    'updated_details': updated_details
+                    'updated_details': updated_details,
+                    'table_summary': table_summary,
+                    'latest_before': latest_before,
+                    'latest_after': latest_after,
+                    'elapsed_sec': elapsed_sec
                 }
             })
         except Exception as e:
@@ -2008,6 +2604,83 @@ def api_data_refresh():
         })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
+
+
+def _load_hf_update_logs(limit: int = 30) -> List[Dict]:
+    """读取高频更新日志（最新在前）"""
+    log_dir = BASE_DIR / 'log' / 'hf_factor_updates'
+    if not log_dir.exists():
+        return []
+
+    files = sorted(log_dir.glob('hf_update_*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+    logs: List[Dict] = []
+    for fp in files[: max(1, min(limit, 200))]:
+        try:
+            payload = json.loads(fp.read_text(encoding='utf-8'))
+            payload['_log_file'] = str(fp.relative_to(BASE_DIR))
+            logs.append(payload)
+        except Exception:
+            continue
+    return logs
+
+
+@app.route('/api/hf-update/logs')
+def api_hf_update_logs():
+    """API: 获取高频因子自动更新日志"""
+    try:
+        limit = int(request.args.get('limit', 30))
+        logs = _load_hf_update_logs(limit=limit)
+        latest = logs[0] if logs else None
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'count': len(logs),
+                'latest': latest,
+                'logs': logs,
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/hf-update/run-sync', methods=['POST'])
+def api_hf_update_run_sync():
+    """API: 同步执行高频因子自动更新（补齐缺失日期）"""
+    try:
+        payload = request.get_json() or {}
+        include_today = _parse_bool_param(payload.get('include_today'), default=is_after_market_close())
+        years_raw = str(payload.get('years', '')).strip()
+        cutoff_date_raw = str(payload.get('cutoff_date', '')).strip()
+        years = None
+        if years_raw:
+            years = [int(x.strip()) for x in years_raw.split(',') if x.strip()]
+        cutoff_date = None
+        if cutoff_date_raw:
+            cutoff_date = pd.to_datetime(cutoff_date_raw).date()
+
+        from hf_factor_auto_update import run_update_job, UpdateConfig
+
+        summary = run_update_job(
+            cfg=UpdateConfig(
+                tick_base=BASE_DIR / 'tick_2026',
+                hf_output_dir=BASE_DIR / 'factor' / 'high_frequency',
+                kzz_daily_output_dir=BASE_DIR / 'factor' / 'high_frequency' / 'kzz_call_auction_amount',
+                kzz_wide_output_dir=BASE_DIR / 'factor' / 'by_factor',
+                log_dir=BASE_DIR / 'log' / 'hf_factor_updates',
+            ),
+            years=years,
+            include_today=include_today,
+            cutoff_date=cutoff_date,
+            verbose=False,
+        )
+
+        return jsonify({
+            'status': 'success',
+            'message': '高频因子更新任务执行完成',
+            'data': summary
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'高频因子更新失败: {str(e)}'})
 
 
 @app.route('/api/data/high-frequency/compute', methods=['POST'])
@@ -2372,6 +3045,123 @@ def get_analysis_engine():
         from mylib.analysis_engine import get_analysis_engine as _get_analysis_engine_impl
         analysis_engine = _get_analysis_engine_impl()
     return analysis_engine
+
+
+def _get_data_manager_tables() -> Dict[str, Dict]:
+    """数据管理页展示的核心数据表配置"""
+    quarter_tables = {
+        'cashflow_q': {
+            'name': '现金流量表（季度）',
+            'description': '季度财务原始数据（英文列）',
+            'directory': 'daily_data/cashflow/',
+            'can_update': False,
+            'period_type': 'quarter',
+        },
+        'income_q': {
+            'name': '利润表（季度）',
+            'description': '季度财务原始数据（英文列）',
+            'directory': 'daily_data/income/',
+            'can_update': False,
+            'period_type': 'quarter',
+        },
+        'balance_q': {
+            'name': '资产负债表（季度）',
+            'description': '季度财务原始数据（英文列）',
+            'directory': 'daily_data/balance/',
+            'can_update': False,
+            'period_type': 'quarter',
+        },
+        'cashflow_q_cn': {
+            'name': '现金流量表（季度中文）',
+            'description': '季度财务原始数据（中文列）',
+            'directory': 'daily_data/cashflow/',
+            'can_update': False,
+            'period_type': 'quarter',
+        },
+        'income_q_cn': {
+            'name': '利润表（季度中文）',
+            'description': '季度财务原始数据（中文列）',
+            'directory': 'daily_data/income/',
+            'can_update': False,
+            'period_type': 'quarter',
+        },
+        'balance_q_cn': {
+            'name': '资产负债表（季度中文）',
+            'description': '季度财务原始数据（中文列）',
+            'directory': 'daily_data/balance/',
+            'can_update': False,
+            'period_type': 'quarter',
+        },
+    }
+
+    base = {
+        'daily': {
+            'name': '日线行情',
+            'description': 'OHLCV行情数据',
+            'fields': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'change', 'pct_chg', 'vol', 'amount'],
+            'directory': 'daily_data/daily/',
+            'can_update': True,
+            'period_type': 'daily',
+        },
+        'kzz_daily': {
+            'name': '可转债日线',
+            'description': '可转债OHLCV行情数据',
+            'fields': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'change', 'pct_chg', 'vol', 'amount'],
+            'directory': 'daily_data/kzz_daily/',
+            'can_update': True,
+            'period_type': 'daily',
+        },
+        'daily_basic': {
+            'name': '每日基本面',
+            'description': '每日基本面指标',
+            'fields': ['ts_code', 'trade_date', 'close', 'turnover_rate', 'turnover_rate_f', 'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv'],
+            'directory': 'daily_data/daily_basic/',
+            'can_update': True,
+            'period_type': 'daily',
+        },
+        'cashflow_daily': {
+            'name': '现金流量表',
+            'description': '每日推算的现金流量数据',
+            'fields': ['ts_code', 'trade_date', 'n_cashflow_act', 'n_cashflow_inv_act', 'n_cash_flows_fnc_act', 'c_fr_sale_sg', 'c_paid_goods_s', 'net_profit'],
+            'directory': 'daily_data/cashflow_daily/',
+            'can_update': True,
+            'period_type': 'daily',
+        },
+        'income_daily': {
+            'name': '利润表',
+            'description': '每日推算的利润数据',
+            'fields': ['ts_code', 'trade_date', 'total_revenue', 'revenue', 'oper_cost', 'operate_profit', 'total_profit', 'n_income', 'basic_eps'],
+            'directory': 'daily_data/income_daily/',
+            'can_update': True,
+            'period_type': 'daily',
+        },
+        'balance_daily': {
+            'name': '资产负债表',
+            'description': '每日推算的资产负债数据',
+            'fields': ['ts_code', 'trade_date', 'total_assets', 'total_liab', 'total_hldr_eqy_exc_min_int', 'total_cur_assets', 'total_cur_liab', 'cash_reser_cb'],
+            'directory': 'daily_data/balance_daily/',
+            'can_update': True,
+            'period_type': 'daily',
+        },
+        'derivative': {
+            'name': '衍生财务指标',
+            'description': '由财务日频数据计算得到的二次指标',
+            'fields': ['ts_code', 'trade_date', 'roe', 'roa', 'gross_margin', 'roic'],
+            'directory': 'daily_data/derivative/',
+            'can_update': False,
+            'period_type': 'daily',
+        }
+    }
+
+    # 动态填充季度字段列表
+    for dt, cfg in quarter_tables.items():
+        try:
+            cfg['fields'] = list_data_fields(data_type=dt, include_meta=True)
+        except Exception:
+            cfg['fields'] = []
+
+    base.update(quarter_tables)
+    return base
 
 if __name__ == '__main__':
     print("=" * 60)

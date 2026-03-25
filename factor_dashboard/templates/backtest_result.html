@@ -153,8 +153,8 @@ function renderRebalance(rows) {
     body.innerHTML = rows.map(r => `
         <tr>
             <td>${r.date || '-'}</td>
-            <td>${r.selected_count ?? '-'}</td>
-            <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${r.selected_symbols || '-'}</td>
+            <td>${r.symbols_count ?? r.selected_count ?? '-'}</td>
+            <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${r.symbols || r.selected_symbols || '-'}</td>
         </tr>
     `).join('');
 }

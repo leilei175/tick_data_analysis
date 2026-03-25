@@ -1,0 +1,445 @@
+{% extends "base.html" %}
+
+{% block title %}数据字段查看 - 高频因子分析平台{% endblock %}
+
+{% block content %}
+<div class="content-section">
+    <div class="card-header">
+        <div>
+            <h2 class="card-title">数据字段查看</h2>
+            <p class="card-subtitle">查看 get_remote_data 支持的所有 data_type 与字段</p>
+        </div>
+        <div style="display: flex; gap: 8px;">
+            <button class="btn" onclick="loadDataFields()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                </svg>
+                刷新
+            </button>
+            <a class="btn" href="/data-manager">
+                返回数据管理
+            </a>
+        </div>
+    </div>
+
+    <div class="section-card" style="margin-bottom: 16px;">
+        <div style="padding: 14px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+            <input
+                id="keywordInput"
+                class="search-input"
+                style="min-width: 320px; flex: 1;"
+                placeholder="输入 data_type 或字段名，例如 daily_basic / turnover_rate / total_mv"
+                oninput="renderAllViews()"
+            />
+            <button class="btn btn-sm" onclick="clearKeyword()">清空</button>
+            <label style="display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px;">
+                <input type="checkbox" id="onlyMatchedToggle" checked onchange="renderAllViews()">
+                仅显示命中字段
+            </label>
+            <span id="summaryText" style="font-size: 12px; color: var(--text-muted);"></span>
+        </div>
+    </div>
+
+    <div class="section-card" style="margin-bottom: 16px;">
+        <div class="section-header">
+            <span class="section-title">调用代码生成</span>
+            <span style="font-size: 12px; color: var(--text-muted);">先在下方点击字段标签进行选择，再复制代码</span>
+        </div>
+        <div style="padding: 12px;">
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+                <input id="codeStart" class="search-input" style="max-width: 160px;" value="20250101" placeholder="start">
+                <input id="codeEnd" class="search-input" style="max-width: 160px;" value="20250110" placeholder="end">
+                <input id="codeStocks" class="search-input" style="min-width: 280px; flex: 1;" placeholder="stocks，可留空或输入 000001.SZ,000002.SZ">
+                <input id="codeBaseUrl" class="search-input" style="min-width: 220px;" value="http://127.0.0.1:9999" placeholder="base_url">
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                <button class="btn btn-primary btn-sm" onclick="copyGeneratedCode()">复制调用代码</button>
+                <button class="btn btn-sm" onclick="clearSelectedFields()">清空已选字段</button>
+                <span id="selectedSummary" style="font-size: 12px; color: var(--text-muted);">未选择字段</span>
+            </div>
+            <pre id="generatedCode" style="
+                margin: 0;
+                padding: 12px;
+                border-radius: var(--radius-md);
+                border: 1px solid var(--border-color);
+                background: var(--bg-tertiary);
+                color: var(--text-secondary);
+                font-family: 'JetBrains Mono', monospace;
+                font-size: 12px;
+                overflow-x: auto;
+            "></pre>
+        </div>
+    </div>
+
+    <div class="section-card" style="margin-bottom: 16px;">
+        <div class="section-header">
+            <span class="section-title">字段快速浏览</span>
+            <span style="font-size: 12px; color: var(--text-muted);">搜索后按 data_type 分组展示并高亮命中字段（点击字段可加入代码生成）</span>
+        </div>
+        <div id="quickResults" style="padding: 12px;">
+            <div class="loading"><div class="loading-spinner"></div></div>
+        </div>
+    </div>
+
+    <div class="section-card">
+        <div class="section-header">
+            <span class="section-title">明细表</span>
+        </div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>data_type</th>
+                        <th>中文名称</th>
+                        <th>字段数量</th>
+                        <th>字段列表</th>
+                        <th>目录</th>
+                    </tr>
+                </thead>
+                <tbody id="fieldsBody">
+                    <tr>
+                        <td colspan="5" class="loading-cell">
+                            <div class="loading"><div class="loading-spinner"></div></div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+let ALL_ITEMS = [];
+const SELECTED_FIELDS = {};
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadDataFields();
+});
+
+function loadDataFields() {
+    fetch('/api/data/fields')
+        .then(resp => resp.json())
+        .then(data => {
+            if (data.status !== 'success') {
+                renderError(data.message || '加载失败');
+                return;
+            }
+            ALL_ITEMS = (data.data && Array.isArray(data.data.items)) ? data.data.items : [];
+            renderAllViews();
+        })
+        .catch(err => {
+            renderError(err.message || '网络错误');
+        });
+}
+
+function clearKeyword() {
+    document.getElementById('keywordInput').value = '';
+    renderAllViews();
+}
+
+function getFilteredItems() {
+    const keyword = (document.getElementById('keywordInput').value || '').trim().toLowerCase();
+    const withScore = ALL_ITEMS.map(item => {
+        const dt = String(item.data_type || '').toLowerCase();
+        const fields = Array.isArray(item.fields) ? item.fields : [];
+        const matchedFields = fields.filter(f => String(f).toLowerCase().includes(keyword));
+        let score = 0;
+        if (!keyword) score = 1;
+        if (dt === keyword) score += 10;
+        if (dt.includes(keyword) && keyword) score += 6;
+        if (matchedFields.length > 0) score += 3 + matchedFields.length;
+        return { item, fields, matchedFields, score };
+    });
+
+    const filtered = withScore.filter(({ item, matchedFields, score }) => {
+        if (!keyword) return true;
+        return score > 0;
+    });
+
+    filtered.sort((a, b) => b.score - a.score || String(a.item.data_type).localeCompare(String(b.item.data_type)));
+    return { keyword, filtered };
+}
+
+function renderAllViews() {
+    const { keyword, filtered } = getFilteredItems();
+    renderQuickResults(keyword, filtered);
+    renderRows(filtered);
+    renderGeneratedCode();
+}
+
+function renderQuickResults(keyword, filtered) {
+    const box = document.getElementById('quickResults');
+    const onlyMatched = document.getElementById('onlyMatchedToggle').checked;
+    document.getElementById('summaryText').textContent = `共 ${ALL_ITEMS.length} 个 data_type，当前显示 ${filtered.length} 个`;
+
+    if (filtered.length === 0) {
+        box.innerHTML = `
+            <div class="empty-tip">无匹配结果，请尝试更短的关键字。</div>
+        `;
+        return;
+    }
+
+    box.innerHTML = filtered.map(({ item, fields, matchedFields }) => {
+        const displayFields = (onlyMatched && keyword) ? matchedFields : fields;
+        const badges = displayFields.map((f) => {
+            const text = String(f);
+            const hit = keyword && text.toLowerCase().includes(keyword);
+            const selected = isFieldSelected(String(item.data_type || ''), text);
+            return `<button type="button" class="field-chip ${hit ? 'matched' : ''} ${selected ? 'selected' : ''}" onclick="toggleField('${escapeJs(String(item.data_type || ''))}','${escapeJs(text)}')">${escapeHtml(text)}</button>`;
+        }).join('');
+        return `
+            <div class="dt-card">
+                <div class="dt-head">
+                    <div>
+                    <div class="dt-name">${escapeHtml(String(item.data_type || ''))}</div>
+                    <div class="dt-title">${escapeHtml(String(item.name || '-'))}</div>
+                </div>
+                <div class="dt-metas">
+                    <span class="badge badge-success">${fields.length} fields</span>
+                        ${keyword ? `<span class="badge badge-primary">命中 ${matchedFields.length}</span>` : ''}
+                </div>
+            </div>
+            <div class="dt-dir">${escapeHtml(String(item.directory || '-'))}</div>
+                <div class="dt-fields">
+                    ${badges || '<span class="empty-tip">该类型下暂无命中字段</span>'}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderRows(filteredWrapped) {
+    const body = document.getElementById('fieldsBody');
+    const filtered = Array.isArray(filteredWrapped) ? filteredWrapped.map(x => x.item) : [];
+    if (filtered.length === 0) {
+        body.innerHTML = `
+            <tr>
+                <td colspan="5" class="loading-cell" style="color: var(--text-muted);">无匹配结果</td>
+            </tr>
+        `;
+        return;
+    }
+
+    body.innerHTML = filtered.map(item => {
+        const fields = Array.isArray(item.fields) ? item.fields : [];
+        const fieldBadges = fields.map(f => `<span class="badge badge-primary" style="margin: 2px;">${escapeHtml(String(f))}</span>`).join('');
+        return `
+            <tr>
+                <td style="font-family: 'JetBrains Mono', monospace; color: var(--accent-primary);">${escapeHtml(String(item.data_type || ''))}</td>
+                <td>${escapeHtml(String(item.name || '-'))}</td>
+                <td style="text-align: center;"><span class="badge badge-success">${Number(item.field_count || fields.length)}</span></td>
+                <td style="min-width: 320px; line-height: 1.8;">${fieldBadges}</td>
+                <td style="font-family: 'JetBrains Mono', monospace; color: var(--text-muted);">${escapeHtml(String(item.directory || '-'))}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function renderError(message) {
+    const box = document.getElementById('quickResults');
+    const body = document.getElementById('fieldsBody');
+    box.innerHTML = `<div class="empty-tip" style="color: var(--accent-danger);">加载失败：${escapeHtml(message)}</div>`;
+    body.innerHTML = `
+        <tr>
+            <td colspan="5" class="loading-cell" style="color: var(--accent-danger);">加载失败：${escapeHtml(message)}</td>
+        </tr>
+    `;
+    document.getElementById('summaryText').textContent = '加载失败';
+}
+
+function getSelectedSummaryData() {
+    const items = Object.keys(SELECTED_FIELDS).map((dt) => {
+        const values = Array.from(SELECTED_FIELDS[dt] || []);
+        return { data_type: dt, fields: values };
+    }).filter(x => x.fields.length > 0);
+    const totalFields = items.reduce((sum, x) => sum + x.fields.length, 0);
+    return { items, totalFields };
+}
+
+function isFieldSelected(dataType, field) {
+    const set = SELECTED_FIELDS[dataType];
+    return !!(set && set.has(field));
+}
+
+function toggleField(dataType, field) {
+    if (!SELECTED_FIELDS[dataType]) {
+        SELECTED_FIELDS[dataType] = new Set();
+    }
+    const set = SELECTED_FIELDS[dataType];
+    if (set.has(field)) {
+        set.delete(field);
+    } else {
+        set.add(field);
+    }
+    if (set.size === 0) {
+        delete SELECTED_FIELDS[dataType];
+    }
+    renderAllViews();
+}
+
+function clearSelectedFields() {
+    Object.keys(SELECTED_FIELDS).forEach(k => delete SELECTED_FIELDS[k]);
+    renderAllViews();
+}
+
+function normalizeStocksInput(raw) {
+    const text = (raw || '').trim();
+    if (!text) return null;
+    const parts = text.split(/[,\s，]+/).map(x => x.trim()).filter(Boolean);
+    if (parts.length === 0) return null;
+    return parts;
+}
+
+function buildCodeSnippet() {
+    const start = (document.getElementById('codeStart').value || '20250101').trim();
+    const end = (document.getElementById('codeEnd').value || '20250110').trim();
+    const baseUrl = (document.getElementById('codeBaseUrl').value || 'http://127.0.0.1:9999').trim();
+    const stocks = normalizeStocksInput(document.getElementById('codeStocks').value);
+
+    const { items, totalFields } = getSelectedSummaryData();
+    if (totalFields === 0) {
+        return `from mylib.get_remote_data import get_remote_data\n\n# 先在“字段快速浏览”中点击字段标签，再复制代码\ndf = get_remote_data(data_type='daily', field='close', start='${escapePy(start)}', end='${escapePy(end)}', base_url='${escapePy(baseUrl)}')`;
+    }
+
+    const header = `from mylib.get_remote_data import get_remote_data\n`;
+    const snippets = items.map(({ data_type, fields }) => {
+        const fieldExpr = fields.length === 1
+            ? `'${escapePy(fields[0])}'`
+            : `[${fields.map(f => `'${escapePy(f)}'`).join(', ')}]`;
+        const stocksExpr = stocks ? `[${stocks.map(s => `'${escapePy(s)}'`).join(', ')}]` : 'None';
+        return `data_${data_type} = get_remote_data(\n    data_type='${escapePy(data_type)}',\n    field=${fieldExpr},\n    start='${escapePy(start)}',\n    end='${escapePy(end)}',\n    stocks=${stocksExpr},\n    base_url='${escapePy(baseUrl)}'\n)`;
+    });
+    return `${header}\n${snippets.join('\n\n')}`;
+}
+
+function renderGeneratedCode() {
+    const { items, totalFields } = getSelectedSummaryData();
+    const summary = items.map(x => `${x.data_type}:${x.fields.length}`).join(' | ');
+    document.getElementById('selectedSummary').textContent = totalFields > 0
+        ? `已选择 ${totalFields} 个字段（${summary}）`
+        : '未选择字段';
+    document.getElementById('generatedCode').textContent = buildCodeSnippet();
+}
+
+async function copyGeneratedCode() {
+    const text = buildCodeSnippet();
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }
+        document.getElementById('selectedSummary').textContent += '，已复制';
+    } catch (e) {
+        alert('复制失败，请手动复制代码');
+    }
+}
+
+function escapeHtml(value) {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function escapeJs(value) {
+    return String(value)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n');
+}
+
+function escapePy(value) {
+    return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+</script>
+
+<style>
+.dt-card {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    background: var(--bg-tertiary);
+}
+
+.dt-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.dt-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--accent-primary);
+    font-weight: 600;
+}
+
+.dt-title {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.dt-metas {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.dt-dir {
+    margin-top: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.dt-fields {
+    margin-top: 8px;
+    line-height: 2.1;
+}
+
+.field-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    margin: 2px 4px 2px 0;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.field-chip.matched {
+    border-color: var(--accent-primary);
+    background: rgba(59, 130, 246, 0.12);
+    color: var(--accent-primary);
+    font-weight: 600;
+}
+
+.field-chip.selected {
+    border-color: var(--accent-success);
+    background: rgba(34, 197, 94, 0.16);
+    color: var(--accent-success);
+    font-weight: 700;
+}
+
+.empty-tip {
+    padding: 8px 2px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+</style>
+{% endblock %}

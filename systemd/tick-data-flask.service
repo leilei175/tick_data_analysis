@@ -1,0 +1,13 @@
+[Unit]
+Description=Tick Data Analysis Flask Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data1/code_git/tick_data_analysis
+ExecStart=/bin/bash /data1/code_git/tick_data_analysis/flask_server.sh run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

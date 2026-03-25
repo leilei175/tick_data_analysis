@@ -9,26 +9,113 @@ from typing import Union, List, Optional, Dict
 from concurrent.futures import ThreadPoolExecutor
 
 DAILY_DIR = './daily_data/daily/'
+KZZ_DAILY_DIR = './daily_data/kzz_daily/'
 DAILY_BASIC_DIR = './daily_data/daily_basic/'
+ETF_DAILY_DIR = './daily_data/etf_daily/'
+ETF_NAV_DIR = './daily_data/etf_nav/'
+ETF_SHARE_DIR = './daily_data/etf_share/'
+ETF_METRICS_DIR = './daily_data/etf_metrics/'
 CASHFLOW_DAILY_DIR = './daily_data/cashflow_daily/'
 INCOME_DAILY_DIR = './daily_data/income_daily/'
 BALANCE_DAILY_DIR = './daily_data/balance_daily/'
+BALANCE_QUARTER_DIR = './daily_data/balance/'
+INCOME_QUARTER_DIR = './daily_data/income/'
+CASHFLOW_QUARTER_DIR = './daily_data/cashflow/'
 CASHFLOW_DAILY_CN_DIR = './daily_data/cashflow_daily_cn/'
 INCOME_DAILY_CN_DIR = './daily_data/income_daily_cn/'
 BALANCE_DAILY_CN_DIR = './daily_data/balance_daily_cn/'
+DERIVATIVE_DIR = './daily_data/derivative/'
 
 # 可用数据类型
 DATA_TYPE_META = {
     'daily': {'data_dir': DAILY_DIR, 'prefix': 'daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'kzz_daily': {'data_dir': KZZ_DAILY_DIR, 'prefix': 'kzz_daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
     'daily_basic': {'data_dir': DAILY_BASIC_DIR, 'prefix': 'daily_basic', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'etf_daily': {'data_dir': ETF_DAILY_DIR, 'prefix': 'etf_daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'etf_nav': {'data_dir': ETF_NAV_DIR, 'prefix': 'etf_nav', 'code_col': 'ts_code', 'date_col': 'nav_date'},
+    'etf_share': {'data_dir': ETF_SHARE_DIR, 'prefix': 'etf_share', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'etf_metrics': {'data_dir': ETF_METRICS_DIR, 'prefix': 'etf_metrics', 'code_col': 'ts_code', 'date_col': 'trade_date'},
     'cashflow_daily': {'data_dir': CASHFLOW_DAILY_DIR, 'prefix': 'cashflow_daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
     'income_daily': {'data_dir': INCOME_DAILY_DIR, 'prefix': 'income_daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
     'balance_daily': {'data_dir': BALANCE_DAILY_DIR, 'prefix': 'balance_daily', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'cashflow_q': {'data_dir': CASHFLOW_QUARTER_DIR, 'prefix': 'cashflow', 'code_col': 'ts_code', 'date_col': 'end_date', 'all_file': 'cashflow_all.parquet', 'is_quarterly': True},
+    'income_q': {'data_dir': INCOME_QUARTER_DIR, 'prefix': 'income', 'code_col': 'ts_code', 'date_col': 'end_date', 'all_file': 'income_all.parquet', 'is_quarterly': True},
+    'balance_q': {'data_dir': BALANCE_QUARTER_DIR, 'prefix': 'balance', 'code_col': 'ts_code', 'date_col': 'end_date', 'all_file': 'balance_all.parquet', 'is_quarterly': True},
     'cashflow_daily_cn': {'data_dir': CASHFLOW_DAILY_CN_DIR, 'prefix': 'cashflow_daily_cn', 'code_col': 'TS代码', 'date_col': '交易日期'},
     'income_daily_cn': {'data_dir': INCOME_DAILY_CN_DIR, 'prefix': 'income_daily_cn', 'code_col': 'TS代码', 'date_col': '交易日期'},
     'balance_daily_cn': {'data_dir': BALANCE_DAILY_CN_DIR, 'prefix': 'balance_daily_cn', 'code_col': 'TS代码', 'date_col': '交易日期'},
+    'derivative': {'data_dir': DERIVATIVE_DIR, 'prefix': 'derivative', 'code_col': 'ts_code', 'date_col': 'trade_date'},
+    'cashflow_q_cn': {'data_dir': CASHFLOW_QUARTER_DIR, 'prefix': 'cashflow', 'code_col': 'TS代码', 'date_col': '报告期', 'all_file': 'cashflow_all_cn.parquet', 'is_quarterly': True},
+    'income_q_cn': {'data_dir': INCOME_QUARTER_DIR, 'prefix': 'income', 'code_col': 'TS代码', 'date_col': '报告期', 'all_file': 'income_all_cn.parquet', 'is_quarterly': True},
+    'balance_q_cn': {'data_dir': BALANCE_QUARTER_DIR, 'prefix': 'balance', 'code_col': 'TS代码', 'date_col': '报告期', 'all_file': 'balance_all_cn.parquet', 'is_quarterly': True},
 }
 DATA_TYPES = list(DATA_TYPE_META.keys())
+DATA_TYPE_ALIASES = {
+    'balance': 'balance_q',
+    'income': 'income_q',
+    'cashflow': 'cashflow_q',
+    'balance_cn': 'balance_q_cn',
+    'income_cn': 'income_q_cn',
+    'cashflow_cn': 'cashflow_q_cn',
+}
+
+
+def normalize_data_type(data_type: Optional[str]) -> Optional[str]:
+    """标准化 data_type（支持别名）"""
+    if data_type is None:
+        return None
+    key = str(data_type).strip()
+    if key == '':
+        return ''
+    return DATA_TYPE_ALIASES.get(key, key)
+
+
+def _contains_chinese(text: str) -> bool:
+    """是否包含中文字符"""
+    return bool(re.search(r'[\u4e00-\u9fff]', str(text or '')))
+
+
+def infer_data_type_from_field(
+    filed: Union[str, List[str]],
+    start: Optional[str] = None,
+    end: Optional[str] = None
+) -> str:
+    """
+    根据字段名自动推断 data_type。
+
+    规则：
+    - filed 为列表时，选择同时包含所有字段的 data_type
+    - filed 为单字段时，选择包含该字段的 data_type
+    - 若字段含中文，优先 *_cn；否则优先非 *_cn
+    """
+    if isinstance(filed, str) and filed.lower() == 'all':
+        raise ValueError("filed='all' 时必须显式指定 data_type")
+
+    if isinstance(filed, (list, tuple, set)):
+        targets = [str(f).strip() for f in filed if str(f).strip()]
+        if not targets:
+            raise ValueError("字段列表为空，无法推断 data_type")
+    else:
+        targets = [str(filed).strip()]
+        if not targets[0]:
+            raise ValueError("字段名为空，无法推断 data_type")
+
+    prefer_cn = any(_contains_chinese(t) for t in targets)
+    ordered_types = (
+        [t for t in DATA_TYPES if t.endswith('_cn')] + [t for t in DATA_TYPES if not t.endswith('_cn')]
+        if prefer_cn else
+        [t for t in DATA_TYPES if not t.endswith('_cn')] + [t for t in DATA_TYPES if t.endswith('_cn')]
+    )
+
+    candidates = []
+    for dt in ordered_types:
+        fields = set(list_data_fields(data_type=dt, include_meta=False, start=start, end=end))
+        if all(t in fields for t in targets):
+            candidates.append(dt)
+
+    if not candidates:
+        raise ValueError(f"无法根据字段 {targets} 推断 data_type，请显式指定 data_type")
+    return candidates[0]
 
 
 def _parse_date_from_filename(filename: str, prefix: str = 'daily') -> Optional[int]:
@@ -204,6 +291,7 @@ def list_data_fields(
     Returns:
         List[str]: 字段名列表
     """
+    data_type = normalize_data_type(data_type)
     if data_type not in DATA_TYPES:
         raise ValueError(f"不支持的数据类型: {data_type}，支持: {DATA_TYPES}")
 
@@ -219,8 +307,21 @@ def list_data_fields(
 
     data_path = Path(data_dir)
 
+    # 季度类型优先按固定 all_file 读取 schema
+    all_file_name = meta.get('all_file')
+    if all_file_name:
+        all_file = data_path / all_file_name
+        if all_file.exists():
+            try:
+                schema_names = pq.read_schema(str(all_file)).names
+                if include_meta:
+                    return schema_names
+                return [c for c in schema_names if c not in [code_col, date_col]]
+            except Exception:
+                pass
+
     # 优先使用年度合并文件读取 schema（更快）
-    merged_files = sorted(data_path.glob('*_all.parquet'))
+    merged_files = sorted(data_path.glob('*_all*.parquet'))
     if merged_files:
         try:
             schema_names = pq.read_schema(str(merged_files[-1])).names
@@ -247,12 +348,102 @@ def list_data_fields(
         return []
 
 
+def _to_date_key_int(series: pd.Series) -> pd.Series:
+    """将日期列标准化为 YYYYMMDD int（无法解析则 NaN）"""
+    s = series.astype(str).str.replace('-', '', regex=False).str.replace('/', '', regex=False).str.strip()
+    return pd.to_numeric(s, errors='coerce')
+
+
+def _get_quarterly_all_file(data_type: str, data_dir: str) -> Optional[Path]:
+    """获取季度数据 all 文件路径"""
+    meta = DATA_TYPE_META[data_type]
+    all_file_name = meta.get('all_file')
+    base = Path(data_dir)
+    if all_file_name:
+        p = base / all_file_name
+        if p.exists():
+            return p
+    # 回退：按前缀匹配 *_all*.parquet
+    cands = sorted(base.glob(f"{meta['prefix']}_all*.parquet"))
+    if cands:
+        return cands[0]
+    return None
+
+
+def _get_quarterly_local_data(
+    sec_list: Optional[List[str]],
+    start: Optional[str],
+    end: Optional[str],
+    filed: str,
+    data_type: str,
+    data_dir: Optional[str] = None
+) -> pd.DataFrame:
+    """读取季度财报数据并转宽表（index=end_date, columns=ts_code）"""
+    meta = DATA_TYPE_META[data_type]
+    code_col = meta['code_col']
+    date_col = meta['date_col']
+    if data_dir is None:
+        data_dir = meta['data_dir']
+
+    all_file = _get_quarterly_all_file(data_type, data_dir)
+    if all_file is None:
+        return pd.DataFrame()
+
+    read_cols = [code_col, date_col, filed]
+    filters = None
+    if sec_list:
+        filters = [(code_col, 'in', sec_list)]
+
+    try:
+        table = pq.read_table(str(all_file), columns=read_cols, filters=filters)
+        df_all = table.to_pandas()
+    except Exception:
+        try:
+            df_all = pd.read_parquet(all_file, columns=read_cols)
+        except Exception:
+            return pd.DataFrame()
+
+    if df_all.empty:
+        return pd.DataFrame()
+    if code_col != 'ts_code' and code_col in df_all.columns:
+        df_all = df_all.rename(columns={code_col: 'ts_code'})
+    if date_col != 'end_date' and date_col in df_all.columns:
+        df_all = df_all.rename(columns={date_col: 'end_date'})
+
+    if sec_list is not None and len(sec_list) > 0:
+        df_all = df_all[df_all['ts_code'].isin(sec_list)]
+
+    date_key = _to_date_key_int(df_all['end_date'])
+    df_all = df_all[date_key.notna()].copy()
+    if df_all.empty:
+        return pd.DataFrame()
+    df_all['end_date_key'] = date_key.loc[df_all.index].astype(int)
+
+    if start:
+        df_all = df_all[df_all['end_date_key'] >= int(start)]
+    if end:
+        df_all = df_all[df_all['end_date_key'] <= int(end)]
+
+    if df_all.empty:
+        return pd.DataFrame()
+    df_all = df_all.dropna(subset=[filed])
+    if df_all.empty:
+        return pd.DataFrame()
+
+    df_all = df_all.drop_duplicates(subset=['end_date_key', 'ts_code'], keep='last')
+    df_pivot = df_all.pivot(index='end_date_key', columns='ts_code', values=filed)
+    df_pivot.index = pd.to_datetime(df_pivot.index.astype(str), format='%Y%m%d', errors='coerce')
+    df_pivot = df_pivot[~pd.isna(df_pivot.index)].sort_index()
+    df_pivot.index.name = 'date'
+    return df_pivot
+
+
 def get_local_data(
     sec_list: Union[List[str], None] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
     filed: Union[str, List[str]] = 'close',
-    data_type: str = 'daily',
+    data_type: Optional[str] = 'daily',
     data_dir: Optional[str] = None,
     parallel: bool = True,
     max_workers: int = 8
@@ -284,7 +475,11 @@ def get_local_data(
         >>> # 每日现金流
         >>> get_local_data(['000001.SZ'], '20250101', '20250110', 'n_cashflow_act', 'cashflow_daily')
     """
-    # 验证 data_type
+    # 允许 data_type 为空：按字段自动推断
+    data_type = normalize_data_type(data_type)
+    data_type = (str(data_type).strip() if data_type is not None else '')
+    if not data_type:
+        data_type = infer_data_type_from_field(filed=filed, start=start, end=end)
     if data_type not in DATA_TYPES:
         raise ValueError(f"不支持的数据类型: {data_type}，支持: {DATA_TYPES}")
     sec_list = _normalize_sec_list(sec_list)
@@ -342,6 +537,17 @@ def get_local_data(
             )
             for f in filed
         }
+
+    meta = DATA_TYPE_META[data_type]
+    if bool(meta.get('is_quarterly')):
+        return _get_quarterly_local_data(
+            sec_list=sec_list,
+            start=start,
+            end=end,
+            filed=str(filed),
+            data_type=data_type,
+            data_dir=data_dir
+        )
 
     meta = DATA_TYPE_META[data_type]
 
@@ -562,6 +768,7 @@ def list_data_files(
     Returns:
         List of (date, filepath) tuples
     """
+    data_type = normalize_data_type(data_type)
     if data_type not in DATA_TYPES:
         raise ValueError(f"不支持的数据类型: {data_type}，支持: {DATA_TYPES}")
 
@@ -570,6 +777,10 @@ def list_data_files(
         prefix = DATA_TYPE_META[data_type]['prefix']
     else:
         prefix = data_type
+
+    if DATA_TYPE_META[data_type].get('is_quarterly'):
+        # 季度类型无按日文件结构
+        return []
 
     files = _find_data_files(data_dir, prefix)
 
@@ -630,11 +841,26 @@ def get_all_data(
     """
     from concurrent.futures import ThreadPoolExecutor
 
+    data_type = normalize_data_type(data_type)
     if data_type not in DATA_TYPES:
         raise ValueError(f"未知数据类型: {data_type}")
     sec_list = _normalize_sec_list(sec_list)
 
     meta = DATA_TYPE_META[data_type]
+    if bool(meta.get('is_quarterly')):
+        # 季度类型回退到逐字段读取
+        if fields is None:
+            fields = list_data_fields(data_type=data_type, include_meta=False, start=start, end=end)
+        return {
+            str(f): get_local_data(
+                sec_list=sec_list,
+                start=start,
+                end=end,
+                filed=str(f),
+                data_type=data_type,
+                parallel=parallel
+            ) for f in (fields or [])
+        }
     data_dir = meta['data_dir']
     code_col = meta['code_col']
     date_col = meta['date_col']
@@ -644,6 +870,8 @@ def get_all_data(
     DATA_FIELDS = {
         'daily': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close',
                   'pre_close', 'change', 'pct_chg', 'vol', 'amount'],
+        'kzz_daily': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close',
+                      'pre_close', 'change', 'pct_chg', 'vol', 'amount'],
         'daily_basic': ['ts_code', 'trade_date', 'close', 'turnover_rate', 'turnover_rate_f',
                        'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio',
                        'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv'],
@@ -652,9 +880,11 @@ def get_all_data(
                           'c_paid_to_for_empl', 'c_recp_borrow', 'proc_issue_bonds'],
         'income_daily': ['ts_code', 'trade_date', 'total_revenue', 'revenue', 'int_income',
                          'operate_profit', 'total_profit', 'income_tax', 'n_income',
-                         'basic_eps', 'diluted_eps'],
+                         'basic_eps', 'diluted_eps', 'ebit', 'total_cogs', 'oper_cost'],
         'balance_daily': ['ts_code', 'trade_date', 'total_assets', 'total_liab', 'total_cur_assets',
-                         'total_cur_liab', 'cash_reser_cb', 'accounts_receiv', 'inventories']
+                         'total_cur_liab', 'cash_reser_cb', 'accounts_receiv', 'inventories',
+                         'total_hldr_eqy_exc_min_int', 'st_borr', 'lt_borr', 'bond_payable'],
+        'derivative': ['ts_code', 'trade_date', 'roe', 'roa', 'gross_margin', 'roic', 'enterprise_value']
     }
 
     # 确定要读取的字段
@@ -835,6 +1065,20 @@ def get_daily_all(
         Dict: {'open': df, 'high': df, 'low': df, 'close': df, ...}
     """
     return get_all_data('daily', start=start, end=end, sec_list=sec_list, parallel=parallel)
+
+
+def get_kzz_daily_all(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    sec_list: Optional[List[str]] = None,
+    parallel: bool = True
+) -> Dict[str, pd.DataFrame]:
+    """
+    快速获取可转债日线所有数据（便捷函数）
+
+    等价于: get_all_data('kzz_daily', start=start, end=end, sec_list=sec_list)
+    """
+    return get_all_data('kzz_daily', start=start, end=end, sec_list=sec_list, parallel=parallel)
 
 
 def get_daily_basic_all(

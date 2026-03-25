@@ -3,3 +3,32 @@ git_token
 __pycache__/
 factor/
 config.py
+
+# 回测输出
+backtest/output_intraday_t0_small_microcap/
+backtest/output_smallcap/
+backtest/web_runs/
+backtest/output*/
+
+# Notebook输出
+notebook/kzz_call_auction_outputs/
+notebook/kzz_call_auction_outputs_2025/
+notebook/kzz_top_close_sell_timing_outputs/
+notebook/kzz_top_price_next_open_outputs/
+notebook/kzz_top_price_next_open_outputs_smoke/
+fundamental_analysis_results_v2
+
+# 日志
+log/
+log/hf_factor_updates/
+flask.log
+flask_server.log
+
+# 数据文件
+*.parquet
+*.csv
+*.png
+*.json
+
+# 进程文件
+flask.pid

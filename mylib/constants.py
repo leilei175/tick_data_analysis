@@ -67,7 +67,12 @@ DEFAULT_OUTPUT_DIR = './output/'
 # 数据类型目录映射
 DATA_TYPE_DIRS = {
     'daily': 'daily',
+    'kzz_daily': 'kzz_daily',
     'daily_basic': 'daily_basic',
+    'etf_daily': 'etf_daily',
+    'etf_nav': 'etf_nav',
+    'etf_share': 'etf_share',
+    'etf_metrics': 'etf_metrics',
     'cashflow': 'cashflow',
     'cashflow_daily': 'cashflow_daily',
     'income': 'income',
@@ -82,6 +87,12 @@ DATA_TYPE_DIRS = {
 
 # 日线数据字段
 DAILY_FIELDS = [
+    'ts_code', 'trade_date', 'open', 'high', 'low', 'close',
+    'pre_close', 'change', 'pct_chg', 'vol', 'amount'
+]
+
+# 可转债日线数据字段
+KZZ_DAILY_FIELDS = [
     'ts_code', 'trade_date', 'open', 'high', 'low', 'close',
     'pre_close', 'change', 'pct_chg', 'vol', 'amount'
 ]

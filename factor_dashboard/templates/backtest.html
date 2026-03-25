@@ -307,9 +307,27 @@ async function loadHistory() {
             <td>${item.created_at || '-'}</td>
             <td>${item.final_value ?? '-'}</td>
             <td>${item.total_return ?? '-'}</td>
-            <td><a class="btn btn-sm" href="${item.result_url}">查看结果</a></td>
+            <td>
+                <a class="btn btn-sm" href="${item.result_url}">查看</a>
+                <button class="btn btn-sm" style="margin-left:4px;background:var(--danger-color);" onclick="deleteBacktest('${item.task_id}')">删除</button>
+            </td>
         </tr>
     `).join('');
+}
+
+async function deleteBacktest(taskId) {
+    if (!confirm('确定要删除这个回测结果吗？此操作不可恢复。')) {
+        return;
+    }
+    const resp = await apiRequest('/api/backtest/delete', {
+        method: 'POST',
+        body: JSON.stringify({task_id: taskId})
+    });
+    if (resp.status === 'success') {
+        loadHistory();
+    } else {
+        alert(resp.message || '删除失败');
+    }
 }
 
 document.addEventListener('DOMContentLoaded', async () => {

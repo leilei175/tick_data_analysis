@@ -71,6 +71,19 @@ start() {
 }
 
 # ==========================
+# 前台运行（供systemd等进程管理器使用）
+# ==========================
+run() {
+    mkdir -p "${LOG_DIR}"
+    init_conda
+
+    echo "前台运行服务，端口: ${PORT}"
+    echo "日志文件: ${LOG_FILE}"
+
+    exec python -m "${APP_MODULE}" >> "${LOG_FILE}" 2>&1
+}
+
+# ==========================
 # 停止服务
 # ==========================
 stop() {
@@ -119,11 +132,14 @@ case "$1" in
     restart)
         restart
         ;;
+    run)
+        run
+        ;;
     status)
         status
         ;;
     *)
-        echo "用法: $0 {start|stop|restart|status}"
+        echo "用法: $0 {start|stop|restart|run|status}"
         exit 1
         ;;
 esac

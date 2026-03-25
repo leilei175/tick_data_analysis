@@ -1,5 +1,8 @@
 # get_local_data 函数使用文档
 
+> 远程服务器调用请使用：`from mylib.get_remote_data import get_remote_data`  
+> 详细说明见：`doc/README_get_remote_data.md`
+
 ## 1. 函数概述
 
 `get_local_data` 是一个用于读取本地日频 parquet 数据的函数，支持按股票列表、日期范围和字段进行灵活查询。

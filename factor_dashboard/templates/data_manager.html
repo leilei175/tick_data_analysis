@@ -11,6 +11,12 @@
             <p class="card-subtitle">管理 daily_data 目录下的所有数据源</p>
         </div>
         <div style="display: flex; gap: 8px;">
+            <a class="btn" href="/data-fields">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 5h16M4 12h16M4 19h16"/>
+                </svg>
+                字段查看
+            </a>
             <button class="btn" onclick="refreshDataStatus()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
@@ -38,7 +44,7 @@
             </div>
             <div>
                 <div class="stat-label">数据表数量</div>
-                <div class="stat-value" id="tableCount">5</div>
+                <div class="stat-value" id="tableCount">6</div>
             </div>
         </div>
         <div class="stat-card success">
@@ -164,7 +170,83 @@
         </div>
     </div>
 
+    <div class="section-card" style="margin-top: 16px;">
+        <div class="section-header">
+            <span class="section-title">高频因子自动更新（18:30）</span>
+            <div style="display: flex; gap: 8px;">
+                <button class="btn btn-sm" onclick="loadHfAutoUpdateLogs()">刷新日志</button>
+                <button class="btn btn-sm btn-primary" onclick="runHfAutoUpdate()">立即执行补缺更新</button>
+            </div>
+        </div>
+        <div style="padding: 14px;">
+            <div style="font-size: 12px; color: var(--text-muted); line-height: 1.8; margin-bottom: 10px;">
+                <div>计划任务: 每个交易日 18:30 自动执行，若缺失多天则自动补齐。</div>
+                <div>更新范围: 常规高频日因子 + 可转债集合竞价成交因子。</div>
+                <div>日志目录: <span style="font-family:'JetBrains Mono',monospace;">log/hf_factor_updates</span></div>
+            </div>
+            <div id="hfAutoUpdateSummary" style="
+                margin-bottom: 10px;
+                background: var(--bg-tertiary);
+                border: 1px solid var(--border-color);
+                border-radius: var(--radius-md);
+                padding: 10px;
+                font-size: 12px;
+                color: var(--text-secondary);
+            ">
+                <div style="color: var(--text-muted);">等待加载自动更新日志...</div>
+            </div>
+            <div id="hfAutoUpdateLogs" style="
+                background: var(--bg-tertiary);
+                border: 1px solid var(--border-color);
+                border-radius: var(--radius-md);
+                padding: 10px;
+                font-size: 12px;
+                font-family: 'JetBrains Mono', monospace;
+                color: var(--text-secondary);
+                max-height: 200px;
+                overflow-y: auto;
+            ">
+                <div style="color: var(--text-muted);">暂无日志</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-card" style="margin-top: 16px;">
+        <div class="section-header">
+            <span class="section-title">集合竞价快照因子</span>
+            <span style="font-size: 12px; color: var(--text-muted);">集合竞价阶段盘口快照的 4 个日频指标</span>
+        </div>
+        <div style="padding: 14px; font-size: 12px; color: var(--text-secondary); line-height: 1.8;">
+            <div>时间窗口: <span style="font-family:'JetBrains Mono',monospace;">09:15:00 &lt;= t &lt; 09:25:00</span></div>
+            <div>日频明细: <span style="font-family:'JetBrains Mono',monospace;">factor/high_frequency/call_auction_snapshot/call_auction_snapshot_YYYY_MM_DD.parquet</span></div>
+            <div>年度宽表: <span style="font-family:'JetBrains Mono',monospace;">factor/by_factor/auction_last*.parquet</span></div>
+            <div>更新脚本: <span style="font-family:'JetBrains Mono',monospace;">build_call_auction_snapshot_factors.py</span></div>
+            <div>更新方式: 按日期范围回填或增量计算，当前未并入 18:30 自动补缺任务。</div>
+            <div style="margin-top: 8px;">指标定义:</div>
+            <div>1. <span style="font-family:'JetBrains Mono',monospace;">auction_last1_ask1_ret</span>：9:25 前最后一个 <span style="font-family:'JetBrains Mono',monospace;">askPrice1 / lastClose - 1</span></div>
+            <div>2. <span style="font-family:'JetBrains Mono',monospace;">auction_last2_ask1_ret</span>：9:25 前倒数第二个 <span style="font-family:'JetBrains Mono',monospace;">askPrice1 / lastClose - 1</span></div>
+            <div>3. <span style="font-family:'JetBrains Mono',monospace;">auction_last1_askVol1</span>：9:25 前最后一个 <span style="font-family:'JetBrains Mono',monospace;">askVol1</span></div>
+            <div>4. <span style="font-family:'JetBrains Mono',monospace;">auction_last2_askVol1</span>：9:25 前倒数第二个 <span style="font-family:'JetBrains Mono',monospace;">askVol1</span></div>
+        </div>
+    </div>
+
     <!-- 日志输出 -->
+    <div class="section-card" style="margin-top: 16px;">
+        <div class="section-header">
+            <span class="section-title">更新进度</span>
+            <span id="updateProgressText" style="font-size: 12px; color: var(--text-muted);">未开始</span>
+        </div>
+        <div style="padding: 12px;">
+            <div style="height: 10px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 999px; overflow: hidden;">
+                <div id="updateProgressBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #0ea5e9, #22c55e); transition: width .25s ease;"></div>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px;">
+                <span id="updateProgressLabel" style="color: var(--text-secondary);">等待更新...</span>
+                <span id="updateProgressPercent" style="font-family: 'JetBrains Mono', monospace; color: var(--text-muted);">0%</span>
+            </div>
+        </div>
+    </div>
+
     <div class="section-card" style="margin-top: 16px;">
         <div class="section-header">
             <span class="section-title">更新日志</span>
@@ -236,6 +318,19 @@
                         border-radius: var(--radius-md);
                         cursor: pointer;
                     ">
+                        <input type="checkbox" id="updateKzzDaily" checked style="width: 16px; height: 16px;">
+                        <span style="font-size: 13px;">可转债日线</span>
+                    </label>
+                    <label style="
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                        padding: 10px 14px;
+                        background: var(--bg-tertiary);
+                        border: 1px solid var(--border-color);
+                        border-radius: var(--radius-md);
+                        cursor: pointer;
+                    ">
                         <input type="checkbox" id="updateDailyBasic" checked style="width: 16px; height: 16px;">
                         <span style="font-size: 13px;">每日基本面</span>
                     </label>
@@ -284,10 +379,12 @@
             </div>
 
             <button class="btn btn-primary" style="width: 100%; justify-content: center;" onclick="executeUpdate()">
+                <span id="updateSubmitText" style="display: inline-flex; align-items: center; gap: 6px;">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;">
                     <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                 </svg>
                 开始更新
+                </span>
             </button>
         </div>
     </div>
@@ -400,11 +497,15 @@ const FIELD_TYPES = {
     'cash_reser_cb': 'float64'
 };
 
+let updateInProgress = false;
+let updateProgressTimer = null;
+
 // 页面加载时获取数据状态
 document.addEventListener('DOMContentLoaded', function() {
     refreshDataStatus();
     updateModalTime();
     initHighFrequencyDate();
+    loadHfAutoUpdateLogs();
 });
 
 function initHighFrequencyDate() {
@@ -436,16 +537,21 @@ function refreshDataStatus() {
         .then(data => {
             if (data.status === 'success') {
                 renderDataTables(data.data);
+                const warnings = (data.data && data.data.warnings) ? data.data.warnings : [];
+                warnings.forEach(msg => addLog('info', msg));
+            } else {
+                renderStatusError(data.message || '获取数据状态失败');
             }
         })
         .catch(error => {
             console.error('获取数据状态失败:', error);
             addLog('error', '获取数据状态失败: ' + error.message);
+            renderStatusError(error.message || '网络错误');
         });
 }
 
 function renderDataTables(data) {
-    const tables = data.tables;
+    const tables = Array.isArray(data.tables) ? data.tables : [];
     let updatedCount = 0;
 
     // 统计数据
@@ -458,10 +564,20 @@ function renderDataTables(data) {
     document.getElementById('tradingStatus').innerHTML = data.is_trading_day
         ? '<span style="color: var(--accent-success);">交易日</span>'
         : '<span style="color: var(--text-muted);">非交易日</span>';
-    document.getElementById('lastUpdate').textContent = data.current_time.split(' ')[0];
+    document.getElementById('lastUpdate').textContent = (data.current_time || '-').split(' ')[0];
 
     // 渲染表格
     const tbody = document.getElementById('dataTableBody');
+    if (tables.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="6" class="loading-cell">
+                    <div style="color: var(--text-muted);">未发现可展示的数据表</div>
+                </td>
+            </tr>
+        `;
+        return;
+    }
     tbody.innerHTML = tables.map(table => `
         <tr>
             <td>
@@ -483,12 +599,28 @@ function renderDataTables(data) {
                 <span class="badge badge-primary">${table.fields.length}</span>
             </td>
             <td>
-                <button class="btn btn-sm" onclick="updateTable('${table.id}')">
-                    更新
-                </button>
+                ${table.can_update
+                    ? `<button class="btn btn-sm" onclick="updateTable('${table.id}')">更新</button>`
+                    : `<button class="btn btn-sm" disabled title="季度原始数据不在此页更新">仅查看</button>`
+                }
             </td>
         </tr>
     `).join('');
+}
+
+function renderStatusError(message) {
+    const tbody = document.getElementById('dataTableBody');
+    document.getElementById('tableCount').textContent = '0';
+    document.getElementById('updatedCount').textContent = '0';
+    document.getElementById('tradingStatus').innerHTML = '<span style="color: var(--text-muted);">未知</span>';
+    document.getElementById('lastUpdate').textContent = '-';
+    tbody.innerHTML = `
+        <tr>
+            <td colspan="6" class="loading-cell">
+                <div style="color: var(--accent-danger);">加载失败：${message}</div>
+            </td>
+        </tr>
+    `;
 }
 
 function showFields(tableId, tableName, fieldsStr) {
@@ -566,6 +698,81 @@ function computeHighFrequencyFactors() {
     });
 }
 
+function renderHfAutoUpdateSummary(latest) {
+    const box = document.getElementById('hfAutoUpdateSummary');
+    if (!latest) {
+        box.innerHTML = '<div style=\"color: var(--text-muted);\">暂无自动更新日志</div>';
+        return;
+    }
+
+    const stats = latest.stats || {};
+    box.innerHTML = `
+        <div><strong>最近执行时间:</strong> ${latest.finished_at || '-'}</div>
+        <div><strong>状态:</strong> ${latest.status || '-'}</div>
+        <div><strong>耗时:</strong> ${latest.elapsed_sec || 0} 秒</div>
+        <div><strong>HF:</strong> 缺失 ${stats.hf_missing_days || 0} 天, 更新 ${stats.hf_updated_days || 0} 天, 失败 ${stats.hf_failed_days || 0} 天</div>
+        <div><strong>KZZ:</strong> 缺失 ${stats.kzz_missing_days || 0} 天, 更新 ${stats.kzz_updated_days || 0} 天, 失败 ${stats.kzz_failed_days || 0} 天</div>
+    `;
+}
+
+function renderHfAutoUpdateLogs(logs) {
+    const box = document.getElementById('hfAutoUpdateLogs');
+    if (!Array.isArray(logs) || logs.length === 0) {
+        box.innerHTML = '<div style=\"color: var(--text-muted);\">暂无日志</div>';
+        return;
+    }
+    box.innerHTML = logs.slice(0, 20).map((log) => {
+        const stats = log.stats || {};
+        return `
+            <div style=\"margin-bottom: 6px;\">
+                [${log.finished_at || '-'}] status=${log.status || '-'} elapsed=${log.elapsed_sec || 0}s
+                HF(${stats.hf_updated_days || 0}/${stats.hf_missing_days || 0}) KZZ(${stats.kzz_updated_days || 0}/${stats.kzz_missing_days || 0})
+            </div>
+        `;
+    }).join('');
+}
+
+function loadHfAutoUpdateLogs() {
+    fetch('/api/hf-update/logs?limit=30')
+        .then(resp => resp.json())
+        .then(data => {
+            if (data.status !== 'success') {
+                addLog('error', data.message || '读取高频自动更新日志失败');
+                return;
+            }
+            const payload = data.data || {};
+            renderHfAutoUpdateSummary(payload.latest || null);
+            renderHfAutoUpdateLogs(payload.logs || []);
+        })
+        .catch(error => {
+            addLog('error', '读取高频自动更新日志失败: ' + error.message);
+        });
+}
+
+function runHfAutoUpdate() {
+    addLog('info', '开始执行高频因子自动补缺更新...');
+    fetch('/api/hf-update/run-sync', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ include_today: true, years: '2025,2026' })
+    })
+    .then(resp => resp.json())
+    .then(data => {
+        if (data.status !== 'success') {
+            addLog('error', data.message || '高频因子自动更新失败');
+            return;
+        }
+        const summary = data.data || {};
+        const stats = summary.stats || {};
+        addLog('success', data.message || '高频因子自动更新完成');
+        addLog('info', `HF更新: ${stats.hf_updated_days || 0}/${stats.hf_missing_days || 0}, KZZ更新: ${stats.kzz_updated_days || 0}/${stats.kzz_missing_days || 0}`);
+        loadHfAutoUpdateLogs();
+    })
+    .catch(error => {
+        addLog('error', '高频因子自动更新失败: ' + error.message);
+    });
+}
+
 function formatDate(dateStr) {
     if (!dateStr) return '-';
     return `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`;
@@ -581,61 +788,97 @@ function closeUpdateModal() {
 }
 
 function updateTable(tableId) {
-    addLog('info', `开始更新 ${tableId}...`);
-
     const tableTypeMap = {
         'daily': 'daily',
+        'kzz_daily': 'kzz_daily',
         'daily_basic': 'daily_basic',
         'cashflow_daily': 'financial',
         'income_daily': 'financial',
         'balance_daily': 'financial'
     };
     const updateType = tableTypeMap[tableId] || 'all';
-
-    fetch('/api/data/update/sync', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            type: updateType,
-            include_today: document.getElementById('includeToday').checked
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.status === 'success') {
-            logUpdateDetails(data);
-            refreshDataStatus();
-        } else {
-            addLog('error', data.message);
-        }
-    })
-    .catch(error => {
-        addLog('error', '更新失败: ' + error.message);
-    });
+    startDataUpdate(updateType, document.getElementById('includeToday').checked, tableId);
 }
 
 function executeUpdate() {
     const updateDaily = document.getElementById('updateDaily').checked;
+    const updateKzzDaily = document.getElementById('updateKzzDaily').checked;
     const updateDailyBasic = document.getElementById('updateDailyBasic').checked;
     const updateFinancial = document.getElementById('updateFinancial').checked;
     const includeToday = document.getElementById('includeToday').checked;
 
     let updateType = 'all';
-    if (updateDaily && !updateDailyBasic && !updateFinancial) {
+    if (updateDaily && !updateKzzDaily && !updateDailyBasic && !updateFinancial) {
         updateType = 'daily';
-    } else if (!updateDaily && updateDailyBasic && !updateFinancial) {
+    } else if (!updateDaily && updateKzzDaily && !updateDailyBasic && !updateFinancial) {
+        updateType = 'kzz_daily';
+    } else if (!updateDaily && !updateKzzDaily && updateDailyBasic && !updateFinancial) {
         updateType = 'daily_basic';
-    } else if (!updateDaily && !updateDailyBasic && updateFinancial) {
+    } else if (!updateDaily && !updateKzzDaily && !updateDailyBasic && updateFinancial) {
         updateType = 'financial';
     }
 
-    addLog('info', `开始更新数据...`);
+    closeUpdateModal();
+    startDataUpdate(updateType, includeToday, 'batch');
+}
+
+function setUpdateProgress(percent, text, statusText) {
+    const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+    document.getElementById('updateProgressBar').style.width = `${safePercent}%`;
+    document.getElementById('updateProgressPercent').textContent = `${safePercent}%`;
+    if (text) {
+        document.getElementById('updateProgressLabel').textContent = text;
+    }
+    if (statusText) {
+        document.getElementById('updateProgressText').textContent = statusText;
+    }
+}
+
+function setUpdateUiDisabled(disabled) {
+    const buttons = document.querySelectorAll('.btn');
+    buttons.forEach((btn) => {
+        if (btn.textContent.includes('更新') || btn.textContent.includes('刷新')) {
+            btn.disabled = disabled;
+        }
+    });
+}
+
+function startProgressAnimation() {
+    stopProgressAnimation();
+    let progress = 8;
+    setUpdateProgress(progress, '初始化更新任务...', '运行中');
+    updateProgressTimer = setInterval(() => {
+        if (progress >= 90) return;
+        progress += progress < 50 ? 6 : 3;
+        if (progress > 90) progress = 90;
+        const label = progress < 40
+            ? '正在拉取交易日历与校验更新范围...'
+            : progress < 75
+                ? '正在下载并写入数据文件...'
+                : '正在汇总更新结果...';
+        setUpdateProgress(progress, label, '运行中');
+    }, 700);
+}
+
+function stopProgressAnimation() {
+    if (updateProgressTimer) {
+        clearInterval(updateProgressTimer);
+        updateProgressTimer = null;
+    }
+}
+
+function startDataUpdate(updateType, includeToday, triggerSource) {
+    if (updateInProgress) {
+        addLog('info', '已有更新任务正在运行，请等待当前任务完成');
+        return;
+    }
+
+    updateInProgress = true;
+    setUpdateUiDisabled(true);
+    addLog('info', `开始更新数据（来源: ${triggerSource}）`);
     addLog('info', `更新类型: ${updateType}`);
     addLog('info', `包含今日: ${includeToday ? '是' : '否'}`);
-
-    closeUpdateModal();
+    startProgressAnimation();
 
     fetch('/api/data/update/sync', {
         method: 'POST',
@@ -649,15 +892,24 @@ function executeUpdate() {
     })
     .then(response => response.json())
     .then(data => {
+        stopProgressAnimation();
         if (data.status === 'success') {
+            setUpdateProgress(100, '更新完成', '完成');
             logUpdateDetails(data);
             refreshDataStatus();
         } else {
-            addLog('error', data.message);
+            setUpdateProgress(100, '更新失败', '失败');
+            addLog('error', data.message || '更新失败');
         }
     })
     .catch(error => {
+        stopProgressAnimation();
+        setUpdateProgress(100, '更新失败', '失败');
         addLog('error', '更新失败: ' + error.message);
+    })
+    .finally(() => {
+        updateInProgress = false;
+        setUpdateUiDisabled(false);
     });
 }
 
@@ -681,12 +933,25 @@ function logUpdateDetails(resp) {
     const payload = (resp && resp.data) ? resp.data : {};
     const updateType = payload.update_type || '-';
     const updatedCount = payload.updated_count ?? '-';
+    const elapsed = payload.elapsed_sec ?? '-';
     addLog('info', `更新类型: ${updateType}`);
     addLog('info', `新增文件数: ${updatedCount}`);
+    addLog('info', `执行耗时: ${elapsed} 秒`);
 
     if (Array.isArray(payload.trade_dates) && payload.trade_dates.length > 0) {
-        addLog('info', `检查交易日: ${payload.trade_dates.join(', ')}`);
+        addLog('info', `检查交易日 (${payload.trade_dates.length} 个): ${payload.trade_dates.join(', ')}`);
     }
+
+    if (payload.latest_before || payload.latest_after) {
+        addLog('info', `更新前最新日期: ${JSON.stringify(payload.latest_before || {})}`);
+        addLog('info', `更新后最新日期: ${JSON.stringify(payload.latest_after || {})}`);
+    }
+
+    const tableSummary = payload.table_summary || {};
+    Object.keys(tableSummary).forEach((tableName) => {
+        const item = tableSummary[tableName] || {};
+        addLog('info', `[${tableName}] 新增 ${item.new_file_count || 0} 个文件`);
+    });
 
     const details = payload.updated_details || {};
     let hasDetail = false;

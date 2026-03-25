@@ -96,6 +96,15 @@
                     </svg>
                     <span>数据管理</span>
                 </a>
+                <a href="{{ url_for('data_fields_page') }}" class="nav-item {% if active_page == 'data-fields' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 5h16M4 12h16M4 19h16"/>
+                        <circle cx="7" cy="5" r="1"/>
+                        <circle cx="7" cy="12" r="1"/>
+                        <circle cx="7" cy="19" r="1"/>
+                    </svg>
+                    <span>数据字段</span>
+                </a>
                 <a href="{{ url_for('docs_center') }}" class="nav-item {% if active_page == 'docs' %}active{% endif %}" onclick="closeSidebarOnMobile()">
                     <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
